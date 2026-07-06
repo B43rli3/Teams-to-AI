@@ -1,0 +1,306 @@
+"""Asynchroner Polling-Worker für Teams-Nachrichten."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+from datetime import UTC, datetime
+
+from app.config import Settings
+from app.exceptions import GraphAPIError, GraphPermissionError, OllamaError
+from app.llm_client import OllamaClient
+from app.logging_config import get_logger, truncate_id, truncate_text
+from app.message_parser import MessageParser
+from app.repository import Repository
+from app.teams_service import TeamsMessage, TeamsService
+
+logger = get_logger(__name__)
+
+
+class PollingWorker:
+    """Pollt Microsoft Graph und verarbeitet neue Teams-Nachrichten."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        teams_service: TeamsService,
+        ollama_client: OllamaClient,
+        repository: Repository,
+        message_parser: MessageParser,
+    ) -> None:
+        self._settings = settings
+        self._teams = teams_service
+        self._ollama = ollama_client
+        self._repo = repository
+        self._parser = message_parser
+        self._running = False
+        self._task: asyncio.Task[None] | None = None
+        self._poll_lock = asyncio.Lock()
+        self._llm_semaphore = asyncio.Semaphore(settings.llm_max_concurrency)
+        self._last_successful_poll: str | None = None
+        self._last_poll_error: str | None = None
+        self._permission_error = False
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    @property
+    def last_successful_poll(self) -> str | None:
+        return self._last_successful_poll
+
+    @property
+    def last_poll_error(self) -> str | None:
+        return self._last_poll_error
+
+    async def start(self) -> None:
+        """Startet den Polling-Worker als Hintergrundtask."""
+        if self._running:
+            return
+        self._running = True
+        self._task = asyncio.create_task(self._poll_loop())
+        logger.info("polling_worker_started", interval=self._settings.poll_interval_seconds)
+
+    async def stop(self) -> None:
+        """Stoppt den Polling-Worker sauber."""
+        self._running = False
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
+        logger.info("polling_worker_stopped")
+
+    async def poll_now(self) -> int:
+        """Löst einen sofortigen Poll aus. Gibt Anzahl neuer Nachrichten zurück."""
+        async with self._poll_lock:
+            return await self._do_poll()
+
+    async def _poll_loop(self) -> None:
+        """Hauptschleife für periodisches Polling."""
+        while self._running:
+            try:
+                async with self._poll_lock:
+                    await self._do_poll()
+            except GraphPermissionError as exc:
+                self._permission_error = True
+                self._last_poll_error = str(exc)
+                logger.error("graph_permission_error", error=str(exc))
+                await asyncio.sleep(60)
+            except Exception as exc:
+                self._last_poll_error = str(exc)[:200]
+                logger.error("poll_loop_error", error=str(exc)[:200])
+
+            if self._permission_error:
+                await asyncio.sleep(60)
+            else:
+                await asyncio.sleep(self._settings.poll_interval_seconds)
+
+    async def _do_poll(self) -> int:
+        """Führt einen einzelnen Poll-Zyklus aus."""
+        if self._permission_error:
+            return 0
+
+        try:
+            messages = await self._teams.fetch_channel_messages()
+            new_count = await self._process_polled_messages(messages)
+            self._last_successful_poll = datetime.now(UTC).isoformat()
+            self._last_poll_error = None
+            logger.info("poll_completed", new_messages=new_count, total_fetched=len(messages))
+            return new_count
+        except GraphPermissionError:
+            raise
+        except GraphAPIError as exc:
+            self._last_poll_error = str(exc)[:200]
+            logger.error("poll_graph_error", error=str(exc)[:200])
+            raise
+        except Exception as exc:
+            self._last_poll_error = str(exc)[:200]
+            logger.error("poll_error", error=str(exc)[:200])
+            raise
+
+    async def _process_polled_messages(self, messages: list[TeamsMessage]) -> int:
+        """Verarbeitet abgerufene Nachrichten."""
+        initial_poll_done = await self._repo.is_initial_poll_done()
+        new_messages = 0
+
+        unknown_messages: list[TeamsMessage] = []
+        for message in messages:
+            known = await self._repo.is_message_known(message.id)
+            if not known:
+                unknown_messages.append(message)
+
+        if not initial_poll_done and not self._settings.process_backlog:
+            for message in unknown_messages:
+                await self._repo.insert_message(
+                    message_id=message.id,
+                    root_message_id=message.root_message_id,
+                    created_at=message.created_at,
+                    sender_id=message.sender_id,
+                    sender_name=message.sender_name,
+                    status="seen",
+                )
+            await self._repo.mark_initial_poll_done()
+            logger.info(
+                "initial_poll_backlog_skipped",
+                marked_seen=len(unknown_messages),
+            )
+            return 0
+
+        if not initial_poll_done and self._settings.process_backlog:
+            backlog_messages = unknown_messages[: self._settings.backlog_limit]
+            for message in backlog_messages:
+                should_process, reason = self._teams.should_process_message(
+                    message, already_processed=False
+                )
+                status = "queued" if should_process else "seen"
+                inserted = await self._repo.insert_message(
+                    message_id=message.id,
+                    root_message_id=message.root_message_id,
+                    created_at=message.created_at,
+                    sender_id=message.sender_id,
+                    sender_name=message.sender_name,
+                    status=status,
+                )
+                if inserted and should_process:
+                    new_messages += 1
+                elif not should_process:
+                    logger.debug(
+                        "message_ignored",
+                        message_id=truncate_id(message.id),
+                        reason=reason,
+                    )
+
+            for message in unknown_messages[self._settings.backlog_limit :]:
+                await self._repo.insert_message(
+                    message_id=message.id,
+                    root_message_id=message.root_message_id,
+                    created_at=message.created_at,
+                    sender_id=message.sender_id,
+                    sender_name=message.sender_name,
+                    status="seen",
+                )
+
+            await self._repo.mark_initial_poll_done()
+        else:
+            for message in unknown_messages:
+                should_process, reason = self._teams.should_process_message(
+                    message, already_processed=False
+                )
+                status = "queued" if should_process else "ignored"
+                if not should_process and reason in ("own_message", "already_processed"):
+                    status = "ignored"
+                elif not should_process:
+                    status = "seen"
+
+                inserted = await self._repo.insert_message(
+                    message_id=message.id,
+                    root_message_id=message.root_message_id,
+                    created_at=message.created_at,
+                    sender_id=message.sender_id,
+                    sender_name=message.sender_name,
+                    status=status,
+                )
+                if inserted and should_process:
+                    new_messages += 1
+                elif not should_process:
+                    logger.debug(
+                        "message_ignored",
+                        message_id=truncate_id(message.id),
+                        reason=reason,
+                    )
+
+        await self._process_queued_messages()
+        return new_messages
+
+    async def _process_queued_messages(self) -> None:
+        """Verarbeitet alle queued Nachrichten."""
+        message_ids = await self._repo.get_queued_message_ids()
+        for message_id in message_ids:
+            await self._process_single_message(message_id)
+
+    async def _process_single_message(self, message_id: str) -> None:
+        """Verarbeitet eine einzelne Nachricht."""
+        claimed = await self._repo.try_claim_message(message_id)
+        if not claimed:
+            return
+
+        async with self._llm_semaphore:
+            try:
+                messages = await self._teams.fetch_channel_messages()
+                target = next((m for m in messages if m.id == message_id), None)
+
+                if target is None:
+                    await self._repo.update_message_failed(
+                        message_id, "Nachricht nicht mehr im Kanal gefunden."
+                    )
+                    return
+
+                status = await self._repo.get_message_status(message_id)
+                if status == "completed":
+                    return
+
+                clean_text = self._teams.extract_clean_text(target)
+                if not clean_text:
+                    await self._repo.update_message_failed(
+                        message_id, "Kein verwertbarer Textinhalt."
+                    )
+                    return
+
+                context = await self._repo.get_conversation_messages(
+                    target.root_message_id,
+                    limit=self._settings.llm_max_context_messages,
+                )
+
+                llm_messages: list[dict[str, str]] = []
+                for ctx_msg in context:
+                    llm_messages.append({"role": ctx_msg["role"], "content": ctx_msg["content"]})
+                llm_messages.append({"role": "user", "content": clean_text})
+
+                llm_response = await self._ollama.chat(
+                    llm_messages,
+                    system_prompt=self._settings.llm_system_prompt,
+                )
+
+                html_response = self._parser.format_llm_response_for_teams(llm_response)
+
+                reply_id = await self._teams.send_thread_reply(
+                    target.root_message_id,
+                    html_response,
+                )
+
+                await self._repo.add_conversation_message(
+                    target.root_message_id, "user", clean_text
+                )
+                await self._repo.add_conversation_message(
+                    target.root_message_id, "assistant", llm_response
+                )
+                await self._repo.update_message_completed(message_id, reply_id)
+
+                logger.info(
+                    "message_processed",
+                    message_id=truncate_id(message_id),
+                    preview=truncate_text(clean_text),
+                )
+
+            except OllamaError as exc:
+                await self._repo.update_message_failed(message_id, f"Ollama-Fehler: {exc}")
+                logger.error(
+                    "ollama_processing_error",
+                    message_id=truncate_id(message_id),
+                    error=str(exc)[:200],
+                )
+            except GraphAPIError as exc:
+                await self._repo.update_message_failed(message_id, f"Graph-Fehler: {exc}")
+                logger.error(
+                    "graph_processing_error",
+                    message_id=truncate_id(message_id),
+                    error=str(exc)[:200],
+                )
+            except Exception as exc:
+                await self._repo.update_message_failed(message_id, f"Verarbeitungsfehler: {exc}")
+                logger.error(
+                    "processing_error",
+                    message_id=truncate_id(message_id),
+                    error=str(exc)[:200],
+                )

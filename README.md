@@ -79,19 +79,85 @@ python --version
 
 ---
 
-## Virtuelle Umgebung erstellen (Windows PowerShell)
+## Repository klonen
+
+Bevor Sie die virtuelle Umgebung erstellen, muss das Projekt lokal vorliegen.
+
+### Option A: Mit Git (empfohlen)
 
 ```powershell
+cd $HOME
+git clone https://github.com/B43rli3/Teams-to-AI.git teams-local-llm
 cd teams-local-llm
+```
+
+> Der GitHub-Repository-Name ist `Teams-to-AI`. Der lokale Ordner kann beliebig heißen; in dieser Anleitung verwenden wir `teams-local-llm`.
+
+### Option B: Als ZIP herunterladen
+
+1. Öffnen Sie https://github.com/B43rli3/Teams-to-AI
+2. Klicken Sie auf **Code → Download ZIP**
+3. Entpacken Sie das Archiv, z. B. nach `C:\Users\nuern\teams-local-llm`
+4. Wechseln Sie in den Ordner:
+
+```powershell
+cd C:\Users\nuern\teams-local-llm
+```
+
+### Prüfen, ob Sie im richtigen Ordner sind
+
+```powershell
+Get-Location
+dir
+```
+
+Sie sollten mindestens diese Dateien sehen: `pyproject.toml`, `.env.example`, `README.md`, Ordner `app\` und `scripts\`.
+
+Wenn `pyproject.toml` fehlt, sind Sie im falschen Verzeichnis.
+
+---
+
+## Virtuelle Umgebung erstellen (Windows PowerShell)
+
+**Wichtig:** Führen Sie die folgenden Befehle nur im Projektordner aus (dort, wo `pyproject.toml` liegt), nicht in `C:\Users\nuern`.
+
+```powershell
+# 1. In den Projektordner wechseln (Pfad anpassen!)
+cd C:\Users\nuern\teams-local-llm
+
+# 2. PowerShell-Skripte für die aktuelle Benutzersitzung erlauben
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+# 3. Virtuelle Umgebung erstellen
 python -m venv .venv
+
+# 4. Virtuelle Umgebung aktivieren
 .\.venv\Scripts\Activate.ps1
 ```
 
-Falls die Skriptausführung blockiert ist:
+Nach erfolgreicher Aktivierung erscheint `(.venv)` am Anfang der Eingabezeile.
+
+### Alternative ohne Aktivierung
+
+Falls `Activate.ps1` weiterhin blockiert ist, können Sie die venv auch direkt nutzen:
 
 ```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m app.cli login
 ```
+
+Die Skripte `scripts\start.ps1` und `scripts\test.ps1` verwenden diese Methode bereits intern.
+
+### Aufräumen, falls die venv im falschen Ordner erstellt wurde
+
+Wenn Sie `python -m venv .venv` versehentlich in `C:\Users\nuern` ausgeführt haben:
+
+```powershell
+cd C:\Users\nuern
+Remove-Item -Recurse -Force .venv
+```
+
+Erstellen Sie die venv danach erneut im Projektordner.
 
 ---
 
@@ -336,6 +402,15 @@ Nur Nachrichten mit einer Teams-Erwähnung des in `BOT_MENTION_ID` konfigurierte
 ---
 
 ## Fehlerbehebung
+
+### Installation und PowerShell
+
+| Problem | Ursache | Lösung |
+|---|---|---|
+| `cd teams-local-llm` → Pfad nicht gefunden | Repository noch nicht geklont | Zuerst `git clone` oder ZIP entpacken (siehe oben) |
+| `pyproject.toml` nicht gefunden | Befehle außerhalb des Projektordners | `cd` in den Ordner mit `app\` und `pyproject.toml` |
+| `Activate.ps1` → Ausführung von Skripts deaktiviert | PowerShell Execution Policy | `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` |
+| venv im Benutzerordner statt im Projekt | `python -m venv` im falschen Verzeichnis | `.venv` in `C:\Users\nuern` löschen, im Projektordner neu erstellen |
 
 ### HTTP 401 (Nicht autorisiert)
 

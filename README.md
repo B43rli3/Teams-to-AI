@@ -89,9 +89,12 @@ Bevor Sie die virtuelle Umgebung erstellen, muss das Projekt lokal vorliegen.
 cd $HOME
 git clone https://github.com/B43rli3/Teams-to-AI.git teams-local-llm
 cd teams-local-llm
+git pull origin main
 ```
 
 > Der GitHub-Repository-Name ist `Teams-to-AI`. Der lokale Ordner kann beliebig heißen; in dieser Anleitung verwenden wir `teams-local-llm`.
+>
+> **Hinweis:** Wenn Sie das Repository bereits früher geklont haben und `pyproject.toml` fehlt, holen Sie den aktuellen Stand mit `git pull origin main` nach.
 
 ### Option B: Als ZIP herunterladen
 

@@ -509,6 +509,14 @@ python -m app.cli reset-watermark                    # Polling-Startpunkt zurüc
 
 ---
 
+## Alternative ohne eigene Entra-App: Power Automate
+
+Wenn Sie keine App-Registrierung in Microsoft Entra anlegen können, lässt sich der Assistent über **Power Automate** mit Ihrem normalen M365-Login betreiben. Ollama kann weiterhin lokal laufen (über Power Automate Desktop auf Ihrem Windows-PC).
+
+Ausführliche Schritt-für-Schritt-Anleitung: [docs/POWER_AUTOMATE_ANLEITUNG.md](docs/POWER_AUTOMATE_ANLEITUNG.md)
+
+---
+
 ## Zukünftige Erweiterungen
 
 - **Thread-Replies verarbeiten** (`PROCESS_THREAD_REPLIES=true`)

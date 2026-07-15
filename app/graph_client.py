@@ -68,6 +68,19 @@ class GraphClient:
         data = await self._request("GET", f"/teams/{team_id}/channels")
         return list(data.get("value", []))
 
+    async def get_joined_chats(self, *, top: int = 50) -> list[dict[str, Any]]:
+        """Listet Chats des angemeldeten Benutzers auf."""
+        data = await self._request(
+            "GET",
+            "/me/chats",
+            params={"$top": str(top), "$expand": "members"},
+        )
+        return list(data.get("value", []))
+
+    async def get_chat(self, chat_id: str) -> dict[str, Any]:
+        """Ruft Metadaten eines Chats ab."""
+        return await self._request("GET", f"/chats/{chat_id}")
+
     async def get_channel_messages(
         self,
         team_id: str,
@@ -83,7 +96,21 @@ class GraphClient:
         )
         return list(data.get("value", []))
 
-    async def send_reply(
+    async def get_chat_messages(
+        self,
+        chat_id: str,
+        *,
+        top: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Ruft Nachrichten eines Gruppen- oder 1:1-Chats ab."""
+        data = await self._request(
+            "GET",
+            f"/chats/{chat_id}/messages",
+            params={"$top": str(top)},
+        )
+        return list(data.get("value", []))
+
+    async def send_channel_reply(
         self,
         team_id: str,
         channel_id: str,
@@ -101,6 +128,37 @@ class GraphClient:
             "POST",
             f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies",
             json=body,
+        )
+
+    async def send_chat_reply(
+        self,
+        chat_id: str,
+        message_id: str,
+        html_content: str,
+    ) -> dict[str, Any]:
+        """Sendet eine Thread-Antwort unter einer Chat-Nachricht."""
+        body = {
+            "body": {
+                "contentType": "html",
+                "content": html_content,
+            }
+        }
+        return await self._request(
+            "POST",
+            f"/chats/{chat_id}/messages/{message_id}/replies",
+            json=body,
+        )
+
+    async def send_reply(
+        self,
+        team_id: str,
+        channel_id: str,
+        message_id: str,
+        html_content: str,
+    ) -> dict[str, Any]:
+        """Alias für send_channel_reply (Abwärtskompatibilität)."""
+        return await self.send_channel_reply(
+            team_id, channel_id, message_id, html_content
         )
 
     async def _request(

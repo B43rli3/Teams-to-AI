@@ -24,8 +24,10 @@ class StatusResponse(BaseModel):
     last_successful_poll: str | None
     last_poll_error: str | None
     authenticated_user_display_name: str | None
+    teams_target_mode: str | None = None
     configured_team_id: str | None
     configured_channel_id: str | None
+    configured_chat_id: str | None = None
     ollama_model: str
     queued_messages: int
     failed_messages: int

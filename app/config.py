@@ -17,6 +17,11 @@ class TriggerMode(StrEnum):
     MENTION = "mention"
 
 
+class TeamsTargetMode(StrEnum):
+    CHANNEL = "channel"
+    CHAT = "chat"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -33,9 +38,15 @@ class Settings(BaseSettings):
     azure_client_id: str = ""
 
     # offline_access wird von MSAL automatisch hinzugefügt und darf nicht manuell übergeben werden.
+    # Channel-Modus: User.Read,ChannelMessage.Read.All,ChannelMessage.Send
+    # Chat-Modus:   User.Read,Chat.Read,Chat.ReadWrite
     graph_scopes: str = "User.Read,ChannelMessage.Read.All,ChannelMessage.Send"
+
+    # channel = Team-Kanal | chat = Gruppen-/1:1-Chat
+    teams_target_mode: TeamsTargetMode = TeamsTargetMode.CHANNEL
     teams_team_id: str = ""
     teams_channel_id: str = ""
+    teams_chat_id: str = ""
 
     poll_interval_seconds: int = 10
     poll_page_size: int = 20
@@ -76,6 +87,15 @@ class Settings(BaseSettings):
             return TriggerMode(value.lower())
         raise ValueError(f"Ungültiger TRIGGER_MODE: {value}")
 
+    @field_validator("teams_target_mode", mode="before")
+    @classmethod
+    def parse_target_mode(cls, value: object) -> TeamsTargetMode:
+        if isinstance(value, TeamsTargetMode):
+            return value
+        if isinstance(value, str):
+            return TeamsTargetMode(value.lower())
+        raise ValueError(f"Ungültiger TEAMS_TARGET_MODE: {value}")
+
     @property
     def graph_scope_list(self) -> list[str]:
         return [s.strip() for s in self.graph_scopes.split(",") if s.strip()]
@@ -83,8 +103,15 @@ class Settings(BaseSettings):
     @property
     def discovery_scopes(self) -> list[str]:
         base = set(self.graph_scope_list)
-        base.update(["Team.ReadBasic.All", "Channel.ReadBasic.All"])
+        if self.teams_target_mode == TeamsTargetMode.CHAT:
+            base.update(["Chat.Read", "Chat.ReadBasic"])
+        else:
+            base.update(["Team.ReadBasic.All", "Channel.ReadBasic.All"])
         return sorted(base)
+
+    @property
+    def is_chat_mode(self) -> bool:
+        return self.teams_target_mode == TeamsTargetMode.CHAT
 
     @property
     def database_path_obj(self) -> Path:
@@ -107,10 +134,17 @@ class Settings(BaseSettings):
         if not self.azure_client_id:
             errors.append("AZURE_CLIENT_ID ist nicht gesetzt.")
         if require_teams:
-            if not self.teams_team_id:
-                errors.append("TEAMS_TEAM_ID ist nicht gesetzt.")
-            if not self.teams_channel_id:
-                errors.append("TEAMS_CHANNEL_ID ist nicht gesetzt.")
+            if self.teams_target_mode == TeamsTargetMode.CHAT:
+                if not self.teams_chat_id:
+                    errors.append(
+                        "TEAMS_CHAT_ID ist nicht gesetzt "
+                        "(erforderlich bei TEAMS_TARGET_MODE=chat)."
+                    )
+            else:
+                if not self.teams_team_id:
+                    errors.append("TEAMS_TEAM_ID ist nicht gesetzt.")
+                if not self.teams_channel_id:
+                    errors.append("TEAMS_CHANNEL_ID ist nicht gesetzt.")
         if self.poll_interval_seconds < 1:
             errors.append("POLL_INTERVAL_SECONDS muss mindestens 1 sein.")
         if self.poll_page_size < 1:
@@ -120,7 +154,9 @@ class Settings(BaseSettings):
         if self.llm_max_concurrency < 1:
             errors.append("LLM_MAX_CONCURRENCY muss mindestens 1 sein.")
         if self.trigger_mode == TriggerMode.MENTION and not self.bot_mention_id:
-            errors.append("BOT_MENTION_ID ist erforderlich, wenn TRIGGER_MODE=mention gesetzt ist.")
+            errors.append(
+                "BOT_MENTION_ID ist erforderlich, wenn TRIGGER_MODE=mention gesetzt ist."
+            )
 
         if errors:
             raise ConfigurationError(

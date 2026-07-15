@@ -296,6 +296,61 @@ Tragen Sie die gewünschten IDs in `.env` ein.
 
 ---
 
+## Alternativ: Gruppen-Chat statt Team-Kanal
+
+Die Anwendung kann statt eines Team-Kanals einen **Gruppen-Chat** (oder 1:1-Chat) pollen.
+
+### 1. Entra-Berechtigungen für Chats
+
+Zusätzlich bzw. statt der Channel-Berechtigungen in der App-Registrierung:
+
+| Berechtigung | Zweck |
+|---|---|
+| `User.Read` | Benutzer ermitteln |
+| `Chat.Read` | Chat-Nachrichten lesen |
+| `Chat.ReadWrite` | Antworten senden |
+
+Admin Consent kann erforderlich sein.
+
+### 2. `.env` für Chat-Modus
+
+```env
+TEAMS_TARGET_MODE=chat
+TEAMS_CHAT_ID=19:xxxxxxxx@thread.v2
+
+# Chat-Scopes (ohne ChannelMessage.*)
+GRAPH_SCOPES=User.Read,Chat.Read,Chat.ReadWrite
+
+# Team/Channel dürfen leer bleiben
+TEAMS_TEAM_ID=
+TEAMS_CHANNEL_ID=
+```
+
+Chat-IDs sehen typischerweise so aus: `19:...@thread.v2`
+
+### 3. Chat-ID prüfen oder auflisten
+
+```powershell
+# Nach Scope-Änderung: neu anmelden
+python -m app.cli login
+
+# Alle Chats auflisten
+python -m app.cli discover-chats
+
+# Graph-Zugriff auf den konfigurierten Chat testen
+python -m app.cli test-graph
+```
+
+### 4. Starten wie gewohnt
+
+```powershell
+.\scripts\start.ps1
+```
+
+Eine **neue** Nachricht im Gruppen-Chat senden (bestehende werden bei `PROCESS_BACKLOG=false` nicht beantwortet).
+
+---
+
 ## Erster Device-Code-Login
 
 ```powershell

@@ -173,8 +173,35 @@ async def cmd_discover_channels(args: argparse.Namespace) -> int:
         auth.save_cache()
 
 
+async def cmd_discover_chats(_args: argparse.Namespace) -> int:
+    """Listet Chats des Benutzers auf."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    auth = _create_auth_service(settings)
+    client, _ = _create_graph_client(auth, settings, scopes=settings.discovery_scopes)
+
+    await client.start()
+    try:
+        chats = await client.get_joined_chats()
+        if not chats:
+            print("Keine Chats gefunden.")
+            return 0
+
+        print(f"\n{'Typ':<12} {'Thema/Name':<35} {'ID'}")
+        print("-" * 100)
+        for chat in chats:
+            chat_type = str(chat.get("chatType", "unknown"))
+            topic = str(chat.get("topic") or "(ohne Thema)")
+            chat_id = str(chat.get("id", ""))
+            print(f"{chat_type:<12} {topic[:35]:<35} {chat_id}")
+        return 0
+    finally:
+        await client.close()
+        auth.save_cache()
+
+
 async def cmd_test_graph(_args: argparse.Namespace) -> int:
-    """Prüft Graph-Zugriff auf den konfigurierten Kanal."""
+    """Prüft Graph-Zugriff auf den konfigurierten Kanal oder Chat."""
     settings = get_settings()
     configure_logging(settings.log_level)
     settings.validate_for_runtime()
@@ -183,12 +210,20 @@ async def cmd_test_graph(_args: argparse.Namespace) -> int:
 
     await client.start()
     try:
-        messages = await client.get_channel_messages(
-            settings.teams_team_id,
-            settings.teams_channel_id,
-            top=5,
-        )
-        print(f"Graph-Verbindung OK. {len(messages)} Nachrichten abgerufen (max. 5).")
+        if settings.is_chat_mode:
+            messages = await client.get_chat_messages(
+                settings.teams_chat_id,
+                top=5,
+            )
+            target = f"Chat {settings.teams_chat_id[:40]}…"
+        else:
+            messages = await client.get_channel_messages(
+                settings.teams_team_id,
+                settings.teams_channel_id,
+                top=5,
+            )
+            target = "Kanal"
+        print(f"Graph-Verbindung OK ({target}). {len(messages)} Nachrichten abgerufen (max. 5).")
         for msg in messages[:3]:
             msg_id = str(msg.get("id", ""))[:12]
             created = str(msg.get("createdDateTime", ""))
@@ -267,12 +302,19 @@ async def cmd_send_test_reply(args: argparse.Namespace) -> int:
         html = parser.format_llm_response_for_teams(
             "Dies ist eine Testantwort vom Teams Local LLM Assistenten."
         )
-        result = await client.send_reply(
-            settings.teams_team_id,
-            settings.teams_channel_id,
-            message_id,
-            html,
-        )
+        if settings.is_chat_mode:
+            result = await client.send_chat_reply(
+                settings.teams_chat_id,
+                message_id,
+                html,
+            )
+        else:
+            result = await client.send_channel_reply(
+                settings.teams_team_id,
+                settings.teams_channel_id,
+                message_id,
+                html,
+            )
         print(f"Testantwort gesendet. Reply-ID: {result.get('id', 'Unbekannt')}")
         return 0
     except Exception as exc:
@@ -326,6 +368,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     channels_parser.add_argument("--team-id", required=True, help="Team-ID")
 
+    subparsers.add_parser("discover-chats", help="Gruppen- und 1:1-Chats auflisten")
+
     subparsers.add_parser("test-graph", help="Graph-Verbindung testen")
     subparsers.add_parser("test-ollama", help="Ollama-Verbindung testen")
 
@@ -353,6 +397,7 @@ def main() -> None:
         "whoami": cmd_whoami,
         "discover-teams": cmd_discover_teams,
         "discover-channels": cmd_discover_channels,
+        "discover-chats": cmd_discover_chats,
         "test-graph": cmd_test_graph,
         "test-ollama": cmd_test_ollama,
         "send-test-reply": cmd_send_test_reply,

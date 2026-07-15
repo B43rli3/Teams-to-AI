@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.config import Settings, TriggerMode
+from app.config import Settings, TeamsTargetMode, TriggerMode
 from app.graph_client import GraphClient
 from app.logging_config import get_logger, truncate_id
 from app.message_parser import MessageParser, check_mention_trigger
@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 
 @dataclass
 class TeamsMessage:
-    """Repräsentiert eine Teams-Kanalnachricht."""
+    """Repräsentiert eine Teams-Kanal- oder Chat-Nachricht."""
 
     id: str
     created_at: str
@@ -54,12 +54,18 @@ class TeamsService:
         return self._authenticated_user_id
 
     async def fetch_channel_messages(self) -> list[TeamsMessage]:
-        """Ruft und parst Kanalnachrichten ab."""
-        raw_messages = await self._graph.get_channel_messages(
-            self._settings.teams_team_id,
-            self._settings.teams_channel_id,
-            top=self._settings.poll_page_size,
-        )
+        """Ruft und parst Nachrichten aus Kanal oder Chat ab."""
+        if self._settings.teams_target_mode == TeamsTargetMode.CHAT:
+            raw_messages = await self._graph.get_chat_messages(
+                self._settings.teams_chat_id,
+                top=self._settings.poll_page_size,
+            )
+        else:
+            raw_messages = await self._graph.get_channel_messages(
+                self._settings.teams_team_id,
+                self._settings.teams_channel_id,
+                top=self._settings.poll_page_size,
+            )
 
         messages: list[TeamsMessage] = []
         for raw in raw_messages:
@@ -124,17 +130,25 @@ class TeamsService:
         html_content: str,
     ) -> str:
         """Sendet eine Thread-Antwort und gibt die Reply-ID zurück."""
-        result = await self._graph.send_reply(
-            self._settings.teams_team_id,
-            self._settings.teams_channel_id,
-            root_message_id,
-            html_content,
-        )
+        if self._settings.teams_target_mode == TeamsTargetMode.CHAT:
+            result = await self._graph.send_chat_reply(
+                self._settings.teams_chat_id,
+                root_message_id,
+                html_content,
+            )
+        else:
+            result = await self._graph.send_channel_reply(
+                self._settings.teams_team_id,
+                self._settings.teams_channel_id,
+                root_message_id,
+                html_content,
+            )
         reply_id = str(result.get("id", ""))
         logger.info(
             "thread_reply_sent",
             root_message_id=truncate_id(root_message_id),
             reply_id=truncate_id(reply_id),
+            target_mode=self._settings.teams_target_mode.value,
         )
         return reply_id
 

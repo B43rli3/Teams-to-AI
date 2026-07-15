@@ -163,7 +163,8 @@ async def test_ollama_response_sent_as_reply(setup_worker: dict) -> None:
         )
     )
 
-    teams._graph.send_reply = AsyncMock(return_value={"id": "reply-1"})
+    teams._graph.send_channel_reply = AsyncMock(return_value={"id": "reply-1"})
+    teams._graph.send_reply = teams._graph.send_channel_reply
 
     await setup_worker["ollama"].start()
     try:
@@ -172,7 +173,7 @@ async def test_ollama_response_sent_as_reply(setup_worker: dict) -> None:
         await setup_worker["ollama"].close()
 
     assert await repo.get_message_status("msg-1") == "completed"
-    teams._graph.send_reply.assert_called_once()
+    teams._graph.send_channel_reply.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -198,7 +199,8 @@ async def test_ollama_error_no_reply_posted(setup_worker: dict) -> None:
         return_value=httpx.Response(500, text="Internal Server Error")
     )
 
-    teams._graph.send_reply = AsyncMock()
+    teams._graph.send_channel_reply = AsyncMock()
+    teams._graph.send_reply = teams._graph.send_channel_reply
 
     await setup_worker["ollama"].start()
     try:
@@ -207,7 +209,7 @@ async def test_ollama_error_no_reply_posted(setup_worker: dict) -> None:
         await setup_worker["ollama"].close()
 
     assert await repo.get_message_status("msg-1") == "failed"
-    teams._graph.send_reply.assert_not_called()
+    teams._graph.send_channel_reply.assert_not_called()
 
 
 @pytest.mark.asyncio

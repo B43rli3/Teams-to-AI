@@ -19,6 +19,30 @@ logger = get_logger(__name__)
 
 GRAPH_AUTHORITY_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}"
 
+# MSAL fuegt diese OpenID-Scopes selbst hinzu - sie duerfen nicht manuell uebergeben werden.
+_MSAL_RESERVED_SCOPES = frozenset({"openid", "profile", "offline_access"})
+
+
+def normalize_msal_scopes(scopes: list[str]) -> list[str]:
+    """Entfernt MSAL-reservierte Scopes und normalisiert Graph-Berechtigungen."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for scope in scopes:
+        cleaned = scope.strip()
+        if not cleaned or cleaned in _MSAL_RESERVED_SCOPES:
+            continue
+        if cleaned.startswith("http://") or cleaned.startswith("https://"):
+            value = cleaned
+        else:
+            # Kurzform → vollständige Graph-API-Scope-URI
+            value = f"https://graph.microsoft.com/{cleaned}"
+        if value not in seen:
+            seen.add(value)
+            normalized.append(value)
+
+    return normalized
+
 
 class TokenCacheManager:
     """Verwaltet den MSAL-Token-Cache mit restriktiven Dateirechten."""
@@ -84,7 +108,12 @@ class AuthService:
     ) -> None:
         self._tenant_id = tenant_id
         self._client_id = client_id
-        self._scopes = scopes
+        self._scopes = normalize_msal_scopes(scopes)
+        if not self._scopes:
+            raise AuthenticationError(
+                "Keine gültigen Graph-Scopes konfiguriert. "
+                "Bitte setzen Sie z. B. User.Read,ChannelMessage.Read.All,ChannelMessage.Send."
+            )
         self._cache_manager = TokenCacheManager(cache_path)
         self._cache_manager.load()
         self._app = msal.PublicClientApplication(

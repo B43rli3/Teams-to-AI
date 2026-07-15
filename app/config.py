@@ -32,7 +32,8 @@ class Settings(BaseSettings):
     azure_tenant_id: str = ""
     azure_client_id: str = ""
 
-    graph_scopes: str = "User.Read,ChannelMessage.Read.All,ChannelMessage.Send,offline_access"
+    # offline_access wird von MSAL automatisch hinzugefügt und darf nicht manuell übergeben werden.
+    graph_scopes: str = "User.Read,ChannelMessage.Read.All,ChannelMessage.Send"
     teams_team_id: str = ""
     teams_channel_id: str = ""
 

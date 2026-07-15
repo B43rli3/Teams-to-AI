@@ -161,6 +161,137 @@ class GraphClient:
             team_id, channel_id, message_id, html_content
         )
 
+    def _message_base_path(
+        self,
+        *,
+        message_id: str,
+        team_id: str | None,
+        channel_id: str | None,
+        chat_id: str | None,
+        target_mode: Any,
+    ) -> str:
+        mode_value = getattr(target_mode, "value", str(target_mode))
+        if mode_value == "chat":
+            if not chat_id:
+                raise GraphAPIError("TEAMS_CHAT_ID fehlt für Hosted-Content-Download.")
+            return f"/chats/{chat_id}/messages/{message_id}"
+        if not team_id or not channel_id:
+            raise GraphAPIError("Team- und Channel-ID fehlen für Hosted-Content-Download.")
+        return f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}"
+
+    async def list_hosted_content_ids(
+        self,
+        *,
+        message_id: str,
+        team_id: str | None = None,
+        channel_id: str | None = None,
+        chat_id: str | None = None,
+        target_mode: Any = "channel",
+    ) -> list[str]:
+        """Listet Hosted-Content-IDs einer Nachricht auf."""
+        base = self._message_base_path(
+            message_id=message_id,
+            team_id=team_id,
+            channel_id=channel_id,
+            chat_id=chat_id,
+            target_mode=target_mode,
+        )
+        data = await self._request("GET", f"{base}/hostedContents")
+        values = data.get("value", [])
+        return [str(item.get("id")) for item in values if item.get("id")]
+
+    async def download_hosted_content(
+        self,
+        *,
+        message_id: str,
+        hosted_content_id: str,
+        team_id: str | None = None,
+        channel_id: str | None = None,
+        chat_id: str | None = None,
+        target_mode: Any = "channel",
+    ) -> tuple[bytes, str]:
+        """Lädt Hosted Content (z. B. Inline-Bilder) herunter."""
+        from urllib.parse import quote
+
+        base = self._message_base_path(
+            message_id=message_id,
+            team_id=team_id,
+            channel_id=channel_id,
+            chat_id=chat_id,
+            target_mode=target_mode,
+        )
+        encoded_id = quote(hosted_content_id, safe="")
+        path = f"{base}/hostedContents/{encoded_id}/$value"
+        return await self._download_bytes(path)
+
+    async def download_binary_url(self, url: str) -> tuple[bytes, str]:
+        """Lädt binäre Inhalte über eine absolute oder relative URL herunter."""
+        return await self._download_bytes(url)
+
+    async def _download_bytes(self, url_or_path: str) -> tuple[bytes, str]:
+        """Lädt Bytes mit Auth und Retry-Logik."""
+        self._token_refreshed_for_request = False
+        last_error: Exception | None = None
+
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                return await self._do_download_bytes(url_or_path)
+            except GraphPermissionError:
+                raise
+            except GraphAPIError as exc:
+                last_error = exc
+                if exc.status_code == 429:
+                    await asyncio.sleep(exc.retry_after or 30)
+                    continue
+                if exc.status_code == 401 and not self._token_refreshed_for_request:
+                    self._token_refresher()
+                    self._token_refreshed_for_request = True
+                    continue
+                if exc.status_code and exc.status_code >= 500 and attempt < self._max_retries:
+                    await asyncio.sleep(self._backoff_with_jitter(attempt))
+                    continue
+                raise
+            except httpx.HTTPError as exc:
+                last_error = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(self._backoff_with_jitter(attempt))
+                    continue
+
+        raise GraphAPIError(f"Download fehlgeschlagen nach Retries: {last_error}")
+
+    async def _do_download_bytes(self, url_or_path: str) -> tuple[bytes, str]:
+        client = self._get_client()
+        token = self._token_provider()
+        headers = {"Authorization": f"Bearer {token}"}
+
+        if url_or_path.startswith("http://") or url_or_path.startswith("https://"):
+            response = await client.get(url_or_path, headers=headers)
+        else:
+            response = await client.get(url_or_path, headers=headers)
+
+        if response.status_code == 401:
+            raise GraphAPIError("Nicht autorisiert (401) beim Download.", status_code=401)
+        if response.status_code == 403:
+            raise GraphPermissionError(
+                "Zugriff verweigert (403) beim Anhangs-Download. "
+                "Prüfen Sie Graph-Berechtigungen (ggf. Files.Read.All für SharePoint-Dateien).",
+                status_code=403,
+            )
+        if response.status_code == 429:
+            raise GraphAPIError(
+                "Rate Limit (429) beim Download.",
+                status_code=429,
+                retry_after=int(response.headers.get("Retry-After", "30")),
+            )
+        if response.status_code >= 400:
+            raise GraphAPIError(
+                f"Download-Fehler (HTTP {response.status_code})",
+                status_code=response.status_code,
+            )
+
+        content_type = response.headers.get("Content-Type", "application/octet-stream")
+        return response.content, content_type
+
     async def _request(
         self,
         method: str,

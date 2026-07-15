@@ -572,12 +572,62 @@ Ausführliche Schritt-für-Schritt-Anleitung: [docs/POWER_AUTOMATE_ANLEITUNG.md]
 
 ---
 
+## Anhänge: Bilder und Dokumente
+
+Die Anwendung kann seit Version des Anhang-Features **Bilder** und **Dokumente** aus Teams-Nachrichten verarbeiten.
+
+### Verhalten
+
+| Typ | Verarbeitung |
+|---|---|
+| Bilder (PNG, JPG, GIF, WEBP, …) | Download → Base64 → Ollama Vision-Modell |
+| PDF, DOCX, TXT, MD, CSV, … | Textextraktion → Kontext im Prompt |
+| Sonstige Dateien | Hinweis im Log, keine LLM-Übergabe |
+
+### `.env`-Einstellungen
+
+```env
+PROCESS_ATTACHMENTS=true
+PROCESS_IMAGES=true
+PROCESS_DOCUMENTS=true
+ATTACHMENT_MAX_FILES=5
+ATTACHMENT_MAX_BYTES=10000000
+ATTACHMENT_MAX_DOCUMENT_CHARS=30000
+
+# Wichtig für Bilder: separates Vision-Modell
+OLLAMA_VISION_MODEL=qwen2.5vl:7b
+```
+
+Vision-Modell installieren:
+
+```powershell
+ollama pull qwen2.5vl:7b
+```
+
+Ohne `OLLAMA_VISION_MODEL` werden Bilder zwar übergeben, aber reine Text-Modelle (z. B. `qwen3:14b`) können sie oft **nicht** sehen – daher die Empfehlung für ein Vision-Modell.
+
+### Nutzung mit Prefix
+
+```
+/ai Was ist auf diesem Bild zu sehen?
+```
+
+(Anhang/Bild beifügen)
+
+### Hinweise
+
+- Inline-Bilder aus dem Teams-Body werden über Graph `hostedContents` geladen.
+- Dateien aus SharePoint/OneDrive können zusätzliche Rechte brauchen (`Files.Read.All`) – sonst erscheint ein Hinweis in der Antwort/Log.
+- Große Anhänge werden anhand von `ATTACHMENT_MAX_BYTES` abgelehnt.
+
+---
+
 ## Zukünftige Erweiterungen
 
 - **Thread-Replies verarbeiten** (`PROCESS_THREAD_REPLIES=true`)
 - **RAG** (Retrieval-Augmented Generation) mit lokaler Wissensbasis
 - **MCP** (Model Context Protocol) für erweiterte Tool-Integration
-- **Dateianhänge** (Bilder, Dokumente) verarbeiten
+- **Erweiterte Anhänge** (OCR, Tabellen, weitere Formate)
 - **Microsoft Teams Bot Framework** für echten Bot-Namen und Avatar
 - **Mehrere Kanäle** gleichzeitig überwachen
 

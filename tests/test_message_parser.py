@@ -34,6 +34,12 @@ class TestMessageParser:
         result = self.parser.parse_teams_message("", has_attachments=True)
         assert result is None
 
+    def test_attachment_only_allowed_returns_empty_string(self) -> None:
+        result = self.parser.parse_teams_message(
+            "", has_attachments=True, allow_attachment_only=True
+        )
+        assert result == ""
+
     def test_whitespace_normalization(self) -> None:
         html = "<p>  Viel   Leerzeichen  </p>"
         result = self.parser.parse_teams_message(html)

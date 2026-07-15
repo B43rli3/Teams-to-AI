@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -24,9 +25,11 @@ class OllamaClient:
         keep_alive: str | None = "10m",
         max_retries: int = 4,
         retry_base_seconds: float = 2.0,
+        vision_model: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
+        self._vision_model = (vision_model or "").strip() or None
         self._timeout = httpx.Timeout(timeout_seconds)
         self._keep_alive = keep_alive
         self._max_retries = max_retries
@@ -76,20 +79,50 @@ class OllamaClient:
 
     async def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         system_prompt: str | None = None,
+        images: list[str] | None = None,
     ) -> str:
-        """Sendet eine Chat-Anfrage an Ollama und gibt die Antwort zurück."""
-        chat_messages: list[dict[str, str]] = []
+        """Sendet eine Chat-Anfrage an Ollama und gibt die Antwort zurück.
+
+        images: optionale Liste von Base64-kodierten Bildern (ohne data:-Prefix).
+        """
+        chat_messages: list[dict[str, Any]] = []
 
         if system_prompt:
             chat_messages.append({"role": "system", "content": system_prompt})
 
         chat_messages.extend(messages)
 
+        # Bilder an die letzte User-Nachricht hängen (Ollama Multimodal-Format)
+        if images:
+            for msg in reversed(chat_messages):
+                if msg.get("role") == "user":
+                    msg["images"] = images
+                    break
+            else:
+                chat_messages.append(
+                    {
+                        "role": "user",
+                        "content": "Bitte analysiere die angehängten Bilder.",
+                        "images": images,
+                    }
+                )
+
+        model = self._model
+        if images and self._vision_model:
+            model = self._vision_model
+            logger.info("ollama_using_vision_model", model=model)
+        elif images:
+            logger.warning(
+                "ollama_images_without_vision_model",
+                model=model,
+                hint="Setzen Sie OLLAMA_VISION_MODEL auf ein Vision-Modell (z. B. qwen2.5vl).",
+            )
+
         payload: dict[str, Any] = {
-            "model": self._model,
+            "model": model,
             "messages": chat_messages,
             "stream": False,
         }
@@ -111,6 +144,8 @@ class OllamaClient:
             "ollama_chat_completed",
             duration_seconds=round(duration, 2),
             response_preview=truncate_text(str(content)),
+            had_images=bool(images),
+            model=model,
         )
 
         return str(content).strip()
@@ -134,8 +169,6 @@ class OllamaClient:
                         wait_seconds=wait_time,
                         error=str(exc),
                     )
-                    import asyncio
-
                     await asyncio.sleep(wait_time)
             except httpx.HTTPError as exc:
                 last_error = exc
@@ -147,8 +180,6 @@ class OllamaClient:
                         wait_seconds=wait_time,
                         error=str(exc),
                     )
-                    import asyncio
-
                     await asyncio.sleep(wait_time)
 
         raise OllamaError(

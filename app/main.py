@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 
 from app import __version__
+from app.attachments import AttachmentProcessor
 from app.auth import AuthService
 from app.config import Settings, get_settings
 from app.graph_client import GraphClient
@@ -95,6 +96,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         keep_alive=settings.ollama_keep_alive,
         max_retries=settings.http_max_retries,
         retry_base_seconds=settings.http_retry_base_seconds,
+        vision_model=settings.ollama_vision_model or None,
     )
     await app_state.ollama_client.start()
 
@@ -121,12 +123,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         authenticated_user_id=str(me.get("id", "")),
     )
 
+    attachment_processor = AttachmentProcessor(
+        graph_client=app_state.graph_client,
+        settings=settings,
+    )
+
     app_state.worker = PollingWorker(
         settings=settings,
         teams_service=app_state.teams_service,
         ollama_client=app_state.ollama_client,
         repository=app_state.repository,
         message_parser=message_parser,
+        attachment_processor=attachment_processor,
     )
     await app_state.worker.start()
 

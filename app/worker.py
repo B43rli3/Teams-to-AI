@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 from datetime import UTC, datetime
 
+from app.attachments import AttachmentProcessor
 from app.config import Settings
 from app.exceptions import GraphAPIError, GraphPermissionError, OllamaError
 from app.llm_client import OllamaClient
@@ -27,12 +28,14 @@ class PollingWorker:
         ollama_client: OllamaClient,
         repository: Repository,
         message_parser: MessageParser,
+        attachment_processor: AttachmentProcessor | None = None,
     ) -> None:
         self._settings = settings
         self._teams = teams_service
         self._ollama = ollama_client
         self._repo = repository
         self._parser = message_parser
+        self._attachments = attachment_processor
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._poll_lock = asyncio.Lock()
@@ -241,9 +244,37 @@ class PollingWorker:
                     return
 
                 clean_text = self._teams.extract_clean_text(target)
-                if not clean_text:
+                if clean_text is None:
                     await self._repo.update_message_failed(
                         message_id, "Kein verwertbarer Textinhalt."
+                    )
+                    return
+
+                attachment_bundle = None
+                images: list[str] = []
+                if self._settings.process_attachments and self._attachments is not None:
+                    attachment_bundle = await self._attachments.process_message_attachments(
+                        message_id=target.id,
+                        body_html=target.body_content,
+                        attachments=target.attachments,
+                    )
+                    images = attachment_bundle.images_base64
+
+                user_content = clean_text.strip()
+                if attachment_bundle is not None:
+                    context_block = attachment_bundle.build_context_block()
+                    if context_block:
+                        if user_content:
+                            user_content = f"{user_content}\n\n{context_block}"
+                        else:
+                            user_content = (
+                                "Bitte analysiere die angehängten Inhalte.\n\n"
+                                f"{context_block}"
+                            )
+
+                if not user_content.strip() and not images:
+                    await self._repo.update_message_failed(
+                        message_id, "Kein Text und keine verwertbaren Anhänge."
                     )
                     return
 
@@ -254,12 +285,30 @@ class PollingWorker:
 
                 llm_messages: list[dict[str, str]] = []
                 for ctx_msg in context:
-                    llm_messages.append({"role": ctx_msg["role"], "content": ctx_msg["content"]})
-                llm_messages.append({"role": "user", "content": clean_text})
+                    llm_messages.append(
+                        {"role": ctx_msg["role"], "content": ctx_msg["content"]}
+                    )
+                llm_messages.append(
+                    {
+                        "role": "user",
+                        "content": user_content
+                        or "Bitte analysiere die angehängten Bilder.",
+                    }
+                )
+
+                system_prompt = self._settings.llm_system_prompt
+                if images:
+                    system_prompt = (
+                        f"{system_prompt}\n\n"
+                        "Der Benutzer kann Bilder anhängen. Beschreibe und nutze sichtbare "
+                        "Bildinhalte in deiner Antwort. Erfinde keine Details, die nicht "
+                        "im Bild erkennbar sind."
+                    )
 
                 llm_response = await self._ollama.chat(
                     llm_messages,
-                    system_prompt=self._settings.llm_system_prompt,
+                    system_prompt=system_prompt,
+                    images=images or None,
                 )
 
                 html_response = self._parser.format_llm_response_for_teams(llm_response)
@@ -270,7 +319,7 @@ class PollingWorker:
                 )
 
                 await self._repo.add_conversation_message(
-                    target.root_message_id, "user", clean_text
+                    target.root_message_id, "user", user_content or "[Bildanhang]"
                 )
                 await self._repo.add_conversation_message(
                     target.root_message_id, "assistant", llm_response
@@ -280,7 +329,8 @@ class PollingWorker:
                 logger.info(
                     "message_processed",
                     message_id=truncate_id(message_id),
-                    preview=truncate_text(clean_text),
+                    preview=truncate_text(user_content or "[bild]"),
+                    images=len(images),
                 )
 
             except OllamaError as exc:

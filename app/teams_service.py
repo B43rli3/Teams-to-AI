@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.config import Settings, TeamsTargetMode, TriggerMode
@@ -28,6 +28,7 @@ class TeamsMessage:
     has_attachments: bool
     is_deleted: bool
     reply_to_id: str | None = None
+    attachments: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def root_message_id(self) -> str:
@@ -101,11 +102,15 @@ class TeamsService:
         cleaned = self._parser.parse_teams_message(
             message.body_content,
             has_attachments=message.has_attachments,
+            allow_attachment_only=self._settings.process_attachments,
         )
-        if not cleaned:
+
+        has_usable_attachments = message.has_attachments and self._settings.process_attachments
+        if not cleaned and not has_usable_attachments:
             return False, "empty_content"
 
-        if not self._check_trigger(message, cleaned):
+        trigger_text = cleaned or ""
+        if not self._check_trigger(message, trigger_text):
             return False, "trigger_not_matched"
 
         return True, "ok"
@@ -115,14 +120,16 @@ class TeamsService:
         cleaned = self._parser.parse_teams_message(
             message.body_content,
             has_attachments=message.has_attachments,
+            allow_attachment_only=self._settings.process_attachments,
         )
-        if not cleaned:
+        if cleaned is None:
             return None
 
         if self._settings.trigger_mode == TriggerMode.PREFIX:
             cleaned = self._parser.remove_prefix(cleaned, self._settings.bot_prefix)
 
-        return cleaned.strip() if cleaned else None
+        # Leerer Text nach Prefix-Entfernung ist OK, wenn Anhänge folgen
+        return cleaned.strip()
 
     async def send_thread_reply(
         self,
@@ -160,7 +167,27 @@ class TeamsService:
             return True
 
         if mode == TriggerMode.PREFIX:
-            return cleaned_text.startswith(self._settings.bot_prefix)
+            # Bei Anhang-only ohne Text: Body kann nur Attachment-Marker sein
+            if cleaned_text.startswith(self._settings.bot_prefix):
+                return True
+            # Roh-HTML/Text vor Bereinigung prüfen
+            raw = self._parser.parse_teams_message(
+                message.body_content,
+                has_attachments=False,
+                allow_attachment_only=False,
+            )
+            if raw and raw.startswith(self._settings.bot_prefix):
+                return True
+            # Auch unbereinigten Body prüfen (Prefix am Anfang)
+            plain = (message.body_content or "").strip()
+            if plain.startswith(self._settings.bot_prefix):
+                return True
+            # HTML kann Prefix im Text enthalten
+            from bs4 import BeautifulSoup
+
+            soup_text = BeautifulSoup(message.body_content or "", "html.parser").get_text()
+            soup_text = " ".join(soup_text.split())
+            return soup_text.startswith(self._settings.bot_prefix)
 
         if mode == TriggerMode.MENTION:
             return check_mention_trigger(message.mentions, self._settings.bot_mention_id)
@@ -181,6 +208,11 @@ class TeamsService:
         mentions = raw.get("mentions", []) or []
 
         deleted = raw.get("deletedDateTime") is not None
+        attachment_list = list(attachments) if isinstance(attachments, list) else []
+
+        # Inline-Bilder im HTML zählen als Anhänge
+        body_content = str(body.get("content", ""))
+        has_inline_media = "hostedContents/" in body_content or "<img" in body_content.lower()
 
         return TeamsMessage(
             id=str(message_id),
@@ -188,10 +220,11 @@ class TeamsService:
             sender_id=str(user_data.get("id", "")),
             sender_name=str(user_data.get("displayName", "Unbekannt")),
             message_type=str(raw.get("messageType", "")),
-            body_content=str(body.get("content", "")),
+            body_content=body_content,
             body_content_type=str(body.get("contentType", "html")),
             mentions=list(mentions) if isinstance(mentions, list) else [],
-            has_attachments=len(attachments) > 0,
+            has_attachments=len(attachment_list) > 0 or has_inline_media,
             is_deleted=deleted,
             reply_to_id=raw.get("replyToId"),
+            attachments=attachment_list,
         )

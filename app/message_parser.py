@@ -26,12 +26,19 @@ class MessageParser:
         html_content: str,
         *,
         has_attachments: bool = False,
+        allow_attachment_only: bool = False,
     ) -> str | None:
-        """Bereinigt den HTML-Inhalt einer Teams-Nachricht."""
+        """Bereinigt den HTML-Inhalt einer Teams-Nachricht.
+
+        Gibt bei leerem Text und allow_attachment_only=True einen leeren String zurück,
+        damit Anhang-only-Nachrichten weiterverarbeitet werden können.
+        """
         if not html_content or not html_content.strip():
+            if has_attachments and allow_attachment_only:
+                logger.info("message_attachment_only")
+                return ""
             if has_attachments:
                 logger.info("message_attachment_only")
-                return None
             return None
 
         soup = BeautifulSoup(html_content, "html.parser")
@@ -52,6 +59,9 @@ class MessageParser:
         text = self._normalize_whitespace(text)
 
         if not text:
+            if has_attachments and allow_attachment_only:
+                logger.info("message_attachment_only")
+                return ""
             if has_attachments:
                 logger.info("message_attachment_only")
             return None

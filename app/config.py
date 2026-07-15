@@ -59,8 +59,17 @@ class Settings(BaseSettings):
 
     process_thread_replies: bool = False
 
+    process_attachments: bool = True
+    process_images: bool = True
+    process_documents: bool = True
+    attachment_max_files: int = 5
+    attachment_max_bytes: int = 10_000_000
+    attachment_max_document_chars: int = 30000
+
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:14b"
+    # Optional: separates Vision-Modell fuer Bilder (z. B. qwen2.5vl:7b, llava)
+    ollama_vision_model: str = ""
     ollama_timeout_seconds: int = 180
     ollama_keep_alive: str = "10m"
 

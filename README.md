@@ -410,8 +410,28 @@ Oder manuell:
 | `GET http://127.0.0.1:8080/health` | Einfacher Health-Check |
 | `GET http://127.0.0.1:8080/ready` | Bereitschaft aller Abhängigkeiten |
 | `GET http://127.0.0.1:8080/status` | Worker-Status und Statistiken |
+| `GET http://127.0.0.1:8080/config` | Lokale Browser-Oberfläche für wichtige `.env`-Werte |
 | `POST http://127.0.0.1:8080/poll-now` | Sofortigen Poll auslösen |
 | `GET http://127.0.0.1:8080/recent-errors` | Kürzliche Fehler |
+
+### Konfiguration im Browser
+
+Unter `http://127.0.0.1:8080/config` steht eine einfache lokale Oberfläche bereit,
+über die Sie folgende Werte ohne manuelles Bearbeiten der `.env` pflegen können:
+
+- `AZURE_TENANT_ID`
+- `AZURE_CLIENT_ID`
+- `TEAMS_TARGET_MODE`
+- `TEAMS_CHAT_ID`
+- `TEAMS_TEAM_ID`
+- `TEAMS_CHANNEL_ID`
+- `TRIGGER_MODE`
+- `BOT_PREFIX`
+- `OLLAMA_VISION_MODEL`
+
+Die Werte werden in die lokale `.env` geschrieben. Nach dem Speichern die Anwendung
+bitte **neu starten**, damit Authentifizierung, Worker und Ollama-Client die neuen
+Werte vollständig übernehmen.
 
 ---
 

@@ -17,6 +17,7 @@ dependencies = [
     "msal>=1.31.0",
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
+    "python-multipart>=0.0.9",
     "python-dotenv>=1.0.0",
     "aiosqlite>=0.20.0",
     "beautifulsoup4>=4.12.0",

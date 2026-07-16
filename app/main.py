@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from html import escape
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Form, HTTPException
+from fastapi.responses import HTMLResponse
 
 from app import __version__
 from app.attachments import AttachmentProcessor
 from app.auth import AuthService
 from app.config import Settings, get_settings
+from app.config_manager import EditableSettings, build_settings_from_form, update_env_file
 from app.graph_client import GraphClient
 from app.llm_client import OllamaClient
 from app.logging_config import configure_logging, get_logger
@@ -166,10 +169,235 @@ app = FastAPI(
 )
 
 
+def _render_config_page(
+    settings: Settings,
+    *,
+    message: str | None = None,
+    error: str | None = None,
+) -> str:
+    editable = EditableSettings.from_settings(settings)
+    select_style = (
+        "width:100%;padding:10px;border:1px solid #cfd8dc;"
+        "border-radius:8px;font-size:14px;"
+    )
+    info_box = ""
+    if message:
+        info_box = (
+            "<div style='padding:12px;border-radius:8px;background:#e8fff1;"
+            "border:1px solid #8bd3a7;margin-bottom:16px;'>"
+            f"{escape(message)}</div>"
+        )
+    if error:
+        info_box = (
+            "<div style='padding:12px;border-radius:8px;background:#fff0f0;"
+            "border:1px solid #e0a0a0;margin-bottom:16px;'>"
+            f"{escape(error)}</div>"
+        )
+
+    def selected(current: str, expected: str) -> str:
+        return "selected" if current == expected else ""
+
+    def row(label: str, name: str, value: str, help_text: str = "", disabled: bool = False) -> str:
+        disabled_attr = "disabled" if disabled else ""
+        return (
+            "<label style='display:block;margin-bottom:14px;'>"
+            f"<div style='font-weight:600;margin-bottom:4px;'>{escape(label)}</div>"
+            f"<input name='{escape(name)}' value='{escape(value)}' {disabled_attr} "
+            "style='width:100%;padding:10px;border:1px solid #cfd8dc;border-radius:8px;"
+            "font-size:14px;box-sizing:border-box;' />"
+            f"<div style='font-size:12px;color:#555;margin-top:4px;'>{escape(help_text)}</div>"
+            "</label>"
+        )
+
+    azure_tenant_row = row(
+        "AZURE_TENANT_ID",
+        "azure_tenant_id",
+        editable.azure_tenant_id,
+        "Tenant-ID aus Microsoft Entra",
+    )
+    azure_client_row = row(
+        "AZURE_CLIENT_ID",
+        "azure_client_id",
+        editable.azure_client_id,
+        "Client-ID der App-Registrierung",
+    )
+    chat_id_row = row(
+        "TEAMS_CHAT_ID",
+        "teams_chat_id",
+        editable.teams_chat_id,
+        "Nur fuer TEAMS_TARGET_MODE=chat relevant",
+    )
+    team_id_row = row(
+        "TEAMS_TEAM_ID",
+        "teams_team_id",
+        editable.teams_team_id,
+        "Nur fuer TEAMS_TARGET_MODE=channel relevant",
+    )
+    channel_id_row = row(
+        "TEAMS_CHANNEL_ID",
+        "teams_channel_id",
+        editable.teams_channel_id,
+        "Nur fuer TEAMS_TARGET_MODE=channel relevant",
+    )
+    bot_prefix_row = row(
+        "BOT_PREFIX",
+        "bot_prefix",
+        editable.bot_prefix,
+        "Wird bei TRIGGER_MODE=prefix verwendet",
+    )
+    vision_model_row = row(
+        "OLLAMA_VISION_MODEL",
+        "ollama_vision_model",
+        editable.ollama_vision_model,
+        "Optionales Vision-Modell fuer Bilder",
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>Teams Local LLM - Konfiguration</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+<body style="font-family:Arial,sans-serif;background:#f5f7fb;margin:0;padding:24px;color:#1f2937;">
+  <div style="max-width:860px;margin:0 auto;background:white;border-radius:14px;padding:28px;
+              box-shadow:0 10px 30px rgba(0,0,0,0.08);">
+    <h1 style="margin-top:0;">Teams Local LLM - Konfiguration</h1>
+    <p style="color:#4b5563;line-height:1.5;">
+      Hier koennen Sie die wichtigsten Einstellungen bequem im Browser pflegen.
+      Nach dem Speichern bitte die Anwendung neu starten, damit alle Komponenten
+      die neuen Werte sicher uebernehmen.
+    </p>
+    {info_box}
+    <form method="post" action="/config">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        {azure_tenant_row}
+        {azure_client_row}
+      </div>
+
+      <label style="display:block;margin-bottom:14px;">
+        <div style="font-weight:600;margin-bottom:4px;">TEAMS_TARGET_MODE</div>
+        <select name="teams_target_mode" style="{select_style}">
+          <option value="channel" {selected(editable.teams_target_mode, "channel")}>channel</option>
+          <option value="chat" {selected(editable.teams_target_mode, "chat")}>chat</option>
+        </select>
+        <div style="font-size:12px;color:#555;margin-top:4px;">
+          channel = Team-Kanal, chat = Gruppen- oder 1:1-Chat
+        </div>
+      </label>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        {chat_id_row}
+        {team_id_row}
+      </div>
+      {channel_id_row}
+
+      <label style="display:block;margin-bottom:14px;">
+        <div style="font-weight:600;margin-bottom:4px;">TRIGGER_MODE</div>
+        <select name="trigger_mode" style="{select_style}">
+          <option value="all" {selected(editable.trigger_mode, "all")}>all</option>
+          <option value="prefix" {selected(editable.trigger_mode, "prefix")}>prefix</option>
+          <option value="mention" {selected(editable.trigger_mode, "mention")}>mention</option>
+        </select>
+      </label>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        {bot_prefix_row}
+        {vision_model_row}
+      </div>
+
+      <div style="padding:14px;background:#f8fafc;border-radius:10px;
+                  border:1px solid #e2e8f0;margin:18px 0;">
+        <strong>Hinweis:</strong> Die Felder werden in die bestehende <code>.env</code> geschrieben.
+        Andere Werte wie OLLAMA_MODEL, Datenbankpfade oder Retry-Konfiguration bleiben unveraendert.
+      </div>
+
+      <button type="submit"
+        style="padding:12px 18px;border:none;border-radius:8px;background:#2563eb;color:white;
+               font-size:14px;font-weight:700;cursor:pointer;">
+        Konfiguration speichern
+      </button>
+    </form>
+  </div>
+</body>
+</html>"""
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     """Einfacher Health-Check."""
     return HealthResponse()
+
+
+@app.get("/config", response_class=HTMLResponse)
+async def config_page() -> HTMLResponse:
+    """Zeigt eine einfache lokale Konfigurationsoberfläche an."""
+    settings = app_state.settings or get_settings()
+    return HTMLResponse(_render_config_page(settings))
+
+
+@app.post("/config", response_class=HTMLResponse)
+async def save_config(
+    azure_tenant_id: str = Form(""),
+    azure_client_id: str = Form(""),
+    teams_target_mode: str = Form("channel"),
+    teams_chat_id: str = Form(""),
+    teams_team_id: str = Form(""),
+    teams_channel_id: str = Form(""),
+    trigger_mode: str = Form("all"),
+    bot_prefix: str = Form("/ai"),
+    ollama_vision_model: str = Form(""),
+) -> HTMLResponse:
+    """Speichert editierbare Konfigurationswerte in die lokale .env-Datei."""
+    current_settings = app_state.settings or get_settings()
+
+    try:
+        editable = build_settings_from_form(
+            current_settings=current_settings,
+            azure_tenant_id=azure_tenant_id,
+            azure_client_id=azure_client_id,
+            teams_target_mode=teams_target_mode,
+            teams_chat_id=teams_chat_id,
+            teams_team_id=teams_team_id,
+            teams_channel_id=teams_channel_id,
+            trigger_mode=trigger_mode,
+            bot_prefix=bot_prefix,
+            ollama_vision_model=ollama_vision_model,
+        )
+    except ValueError as exc:
+        return HTMLResponse(
+            _render_config_page(current_settings, error=str(exc)),
+            status_code=400,
+        )
+
+    env_path = current_settings.token_cache_path_obj.parent.parent / ".env"
+    update_env_file(env_path, editable.to_env_map())
+
+    merged_values = current_settings.model_dump()
+    merged_values.update(
+        {
+            "azure_tenant_id": editable.azure_tenant_id,
+            "azure_client_id": editable.azure_client_id,
+            "teams_target_mode": editable.teams_target_mode,
+            "teams_chat_id": editable.teams_chat_id,
+            "teams_team_id": editable.teams_team_id,
+            "teams_channel_id": editable.teams_channel_id,
+            "trigger_mode": editable.trigger_mode,
+            "bot_prefix": editable.bot_prefix,
+            "ollama_vision_model": editable.ollama_vision_model,
+        }
+    )
+    app_state.settings = Settings(**merged_values)
+
+    return HTMLResponse(
+        _render_config_page(
+            app_state.settings,
+            message=(
+                "Konfiguration gespeichert. Bitte die Anwendung neu starten, "
+                "damit Authentifizierung, Worker und Ollama-Client die neuen Werte verwenden."
+            ),
+        )
+    )
 
 
 @app.get("/ready", response_model=ReadyResponse)

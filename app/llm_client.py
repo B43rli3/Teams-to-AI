@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from app.exceptions import OllamaError
+from app.exceptions import OllamaContextTooLargeError, OllamaError
 from app.logging_config import get_logger, truncate_text
 
 logger = get_logger(__name__)
@@ -158,6 +158,8 @@ class OllamaClient:
             try:
                 return await self._do_chat_request(payload)
             except OllamaError as exc:
+                if isinstance(exc, OllamaContextTooLargeError):
+                    raise
                 if exc.status_code is not None and 400 <= exc.status_code < 500:
                     raise
                 last_error = exc
@@ -192,8 +194,19 @@ class OllamaClient:
         response = await client.post("/api/chat", json=payload)
 
         if response.status_code >= 400:
+            body = response.text[:500]
+            lower = body.lower()
+            if response.status_code == 400 and (
+                "exceed_context_size" in lower
+                or "exceeds the available context size" in lower
+                or "context length" in lower
+            ):
+                raise OllamaContextTooLargeError(
+                    f"Ollama-Kontext zu groß (HTTP {response.status_code}): {body[:200]}",
+                    status_code=response.status_code,
+                )
             raise OllamaError(
-                f"Ollama-Fehler (HTTP {response.status_code}): {response.text[:200]}",
+                f"Ollama-Fehler (HTTP {response.status_code}): {body[:200]}",
                 status_code=response.status_code,
             )
 

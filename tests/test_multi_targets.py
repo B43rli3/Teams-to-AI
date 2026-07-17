@@ -90,5 +90,10 @@ async def test_repository_isolates_same_message_id_across_targets(
         assert await repo.is_message_known("msg-1", target_key="chat:b")
         queued = await repo.get_queued_messages()
         assert len(queued) == 2
+
+        abandoned = await repo.abandon_queued_messages()
+        assert abandoned == 2
+        assert await repo.get_queued_messages() == []
+        assert await repo.get_message_status("msg-1", target_key="chat:a") == "seen"
     finally:
         await repo.close()

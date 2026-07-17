@@ -197,7 +197,7 @@ class GraphClient:
         return await self._request(
             "GET",
             f"/teams/{team_id}/channels/{channel_id}/filesFolder",
-            params={"$select": "id,name,parentReference,webDavUrl,webUrl,eTag"},
+            params={"$select": "id,name,parentReference,webUrl,eTag"},
         )
 
     async def get_chat_files_folder(self, chat_id: str) -> dict[str, Any]:
@@ -205,7 +205,7 @@ class GraphClient:
         return await self._request(
             "GET",
             f"/chats/{chat_id}/filesFolder",
-            params={"$select": "id,name,parentReference,webDavUrl,webUrl,eTag"},
+            params={"$select": "id,name,parentReference,webUrl,eTag"},
         )
 
     async def upload_file_to_files_folder(
@@ -244,7 +244,7 @@ class GraphClient:
             path,
             content,
             content_type=content_type,
-            params={"$select": "id,name,webDavUrl,webUrl,eTag,file"},
+            params={"$select": "id,name,webUrl,eTag,file"},
         )
 
     async def send_reply(

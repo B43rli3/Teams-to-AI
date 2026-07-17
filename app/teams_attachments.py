@@ -22,10 +22,11 @@ def extract_guid_from_etag(etag: str) -> str | None:
 def build_reference_attachment(drive_item: dict[str, Any]) -> dict[str, str]:
     """Erzeugt ein Teams-Reference-Attachment aus einem driveItem."""
     attachment_id = extract_guid_from_etag(str(drive_item.get("eTag", ""))) or str(uuid.uuid4())
+    # webUrl ist auf Teams/Graph driveItem zuverlässig; webDavUrl oft nicht selektierbar.
     content_url = str(
-        drive_item.get("webDavUrl")
+        drive_item.get("webUrl")
+        or drive_item.get("webDavUrl")
         or drive_item.get("@microsoft.graph.downloadUrl")
-        or drive_item.get("webUrl")
         or ""
     )
     if not content_url:

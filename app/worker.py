@@ -8,7 +8,12 @@ from datetime import UTC, datetime
 
 from app.attachments import AttachmentProcessor
 from app.config import Settings
-from app.exceptions import GraphAPIError, GraphPermissionError, OllamaError
+from app.exceptions import (
+    GraphAPIError,
+    GraphPermissionError,
+    OllamaContextTooLargeError,
+    OllamaError,
+)
 from app.language_guard import looks_predominantly_english
 from app.llm_client import OllamaClient
 from app.llm_prompts import GERMAN_RETRY_PROMPT, build_system_prompt
@@ -68,6 +73,14 @@ class PollingWorker:
             return
         self._running = True
         self._task = asyncio.create_task(self._poll_loop())
+        if not self._settings.process_backlog:
+            abandoned = await self._repo.abandon_queued_messages()
+            if abandoned:
+                logger.info(
+                    "startup_backlog_cleared",
+                    abandoned=abandoned,
+                    hint="PROCESS_BACKLOG=false: offene queued Nachrichten verworfen.",
+                )
         logger.info(
             "polling_worker_started",
             interval=self._settings.poll_interval_seconds,
@@ -382,11 +395,35 @@ class PollingWorker:
                     include_pdf_hint=wants_pdf,
                 )
 
-                llm_response = await self._ollama.chat(
-                    llm_messages,
-                    system_prompt=system_prompt,
-                    images=images or None,
-                )
+                try:
+                    llm_response = await self._ollama.chat(
+                        llm_messages,
+                        system_prompt=system_prompt,
+                        images=images or None,
+                    )
+                except OllamaContextTooLargeError:
+                    logger.warning(
+                        "ollama_context_too_large_retry",
+                        message_id=truncate_id(message_id),
+                        had_images=bool(images),
+                    )
+                    # Retry ohne Bilder und mit gekürztem Kontext
+                    truncated_user = truncate_text(user_content, 6000)
+                    compact_messages = [
+                        {
+                            "role": "user",
+                            "content": (
+                                truncated_user
+                                or "Bitte gib eine kurze Antwort auf Deutsch."
+                            ),
+                        }
+                    ]
+                    llm_response = await self._ollama.chat(
+                        compact_messages,
+                        system_prompt=system_prompt,
+                        images=None,
+                    )
+                    images = []
 
                 if self._settings.llm_force_german_retry and looks_predominantly_english(
                     llm_response
@@ -394,11 +431,26 @@ class PollingWorker:
                     logger.info("llm_german_retry_triggered", message_id=truncate_id(message_id))
                     llm_messages.append({"role": "assistant", "content": llm_response})
                     llm_messages.append({"role": "user", "content": GERMAN_RETRY_PROMPT})
-                    llm_response = await self._ollama.chat(
-                        llm_messages,
-                        system_prompt=system_prompt,
-                        images=images or None,
-                    )
+                    try:
+                        llm_response = await self._ollama.chat(
+                            llm_messages,
+                            system_prompt=system_prompt,
+                            images=images or None,
+                        )
+                    except OllamaContextTooLargeError:
+                        llm_response = await self._ollama.chat(
+                            [
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        f"{GERMAN_RETRY_PROMPT}\n\n"
+                                        f"Vorherige Antwort:\n{llm_response[:4000]}"
+                                    ),
+                                }
+                            ],
+                            system_prompt=system_prompt,
+                            images=None,
+                        )
 
                 html_response = self._parser.format_llm_response_for_teams(llm_response)
                 attachments: list[dict[str, str]] | None = None

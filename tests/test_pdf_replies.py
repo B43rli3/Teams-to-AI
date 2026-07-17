@@ -16,7 +16,13 @@ from app.teams_attachments import (
 def test_wants_pdf_attachment_detects_german_request() -> None:
     assert wants_pdf_attachment("Bitte als PDF senden")
     assert wants_pdf_attachment("/ai Erstelle mir ein PDF mit einer Zusammenfassung")
+    assert wants_pdf_attachment("Schick mir das als PDF")
     assert not wants_pdf_attachment("Was steht in der Datei?")
+    assert not wants_pdf_attachment("Was ist das für ein Dokument?")
+    assert not wants_pdf_attachment("Fasse mir folgende PDF zusammen?")
+    assert not wants_pdf_attachment(
+        "Was steht in der PDF?\n\n--- Dokument: Test.pdf ---\nInhalt"
+    )
 
 
 def test_build_system_prompt_includes_german_rule() -> None:
@@ -40,6 +46,19 @@ def test_looks_predominantly_english() -> None:
     assert not looks_predominantly_english(
         "Das ist eine ausführliche Antwort auf Deutsch mit mehreren deutschen Wörtern."
     )
+
+
+def test_build_reference_attachment_prefers_web_url() -> None:
+    attachment = build_reference_attachment(
+        {
+            "eTag": '"668f7fa8-8129-4de7-b32b-fe1b442e6ef1",1"',
+            "webUrl": "https://contoso.sharepoint.com/sites/x/file.pdf",
+            "webDavUrl": "https://contoso.sharepoint.com/dav/file.pdf",
+            "name": "file.pdf",
+        }
+    )
+    assert attachment["contentUrl"].endswith("file.pdf")
+    assert "sharepoint.com/sites" in attachment["contentUrl"]
 
 
 def test_build_reference_attachment_from_drive_item() -> None:

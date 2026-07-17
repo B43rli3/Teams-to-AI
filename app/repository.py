@@ -372,15 +372,13 @@ class Repository:
         return "initial_poll_done"
 
     async def is_initial_poll_done(self, *, target_key: str = "") -> bool:
-        """Prüft, ob der erste Poll für ein Ziel bereits erfolgt ist."""
+        """Prüft, ob der erste Poll für ein Ziel bereits erfolgt ist.
+
+        Jedes Ziel hat einen eigenen Watermark. Neue Targets starten immer mit
+        Erstpoll (Backlog wird bei PROCESS_BACKLOG=false nur als seen markiert).
+        """
         value = await self.get_service_state(self._initial_poll_key(target_key))
-        if value == "true":
-            return True
-        # Legacy-Kompatibilität: globaler Flag gilt für leeren target_key
-        if target_key:
-            legacy = await self.get_service_state("initial_poll_done")
-            return legacy == "true"
-        return False
+        return value == "true"
 
     async def mark_initial_poll_done(self, *, target_key: str = "") -> None:
         """Markiert den ersten Poll als abgeschlossen."""
@@ -467,6 +465,25 @@ class Repository:
                 (self._initial_poll_key(target_key),),
             )
         await conn.commit()
+
+    async def abandon_queued_messages(self) -> int:
+        """Markiert alle queued Nachrichten als seen (kein Nacharbeiten von Backlog)."""
+        conn = self._get_conn()
+        now = _utc_now()
+        cursor = await conn.execute(
+            """
+            UPDATE processed_messages
+            SET status = 'seen', completed_at = ?,
+                error_message = 'Backlog verworfen (PROCESS_BACKLOG=false).'
+            WHERE status = 'queued'
+            """,
+            (now,),
+        )
+        await conn.commit()
+        count = int(cursor.rowcount or 0)
+        if count:
+            logger.info("queued_messages_abandoned", count=count)
+        return count
 
     async def get_queued_messages(self) -> list[dict[str, str]]:
         """Gibt queued Nachrichten inkl. target_key in chronologischer Reihenfolge zurück."""

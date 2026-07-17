@@ -44,6 +44,10 @@ class OllamaError(TeamsLocalLLMError):
         self.status_code = status_code
 
 
+class OllamaContextTooLargeError(OllamaError):
+    """Ollama lehnt die Anfrage wegen zu großem Kontext ab."""
+
+
 class MessageProcessingError(TeamsLocalLLMError):
     """Fehler bei der Nachrichtenverarbeitung."""
 

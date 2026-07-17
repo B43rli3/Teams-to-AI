@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import base64
+
 import httpx
 import pytest
 import respx
 
 from app.exceptions import GraphPermissionError
-from app.graph_client import GRAPH_BASE_URL, GraphClient
+from app.graph_client import (
+    GRAPH_BASE_URL,
+    GraphClient,
+    encode_sharing_url,
+    is_sharepoint_or_onedrive_url,
+)
 
 
 @pytest.fixture
@@ -110,5 +117,80 @@ async def test_send_reply(graph_client: GraphClient) -> None:
     try:
         result = await graph_client.send_reply("team-1", "channel-1", "msg-1", "<p>Test</p>")
         assert result["id"] == "reply-1"
+    finally:
+        await graph_client.close()
+
+
+def test_encode_sharing_url_matches_graph_spec() -> None:
+    url = "https://contoso.sharepoint.com/sites/Docs/Shared Documents/file.pdf"
+    token = encode_sharing_url(url)
+    assert token.startswith("u!")
+    raw = token[2:].replace("_", "/").replace("-", "+")
+    padding = "=" * (-len(raw) % 4)
+    assert base64.b64decode(raw + padding).decode("utf-8") == url
+
+
+def test_is_sharepoint_or_onedrive_url() -> None:
+    assert is_sharepoint_or_onedrive_url(
+        "https://contoso.sharepoint.com/sites/Docs/Shared%20Documents/a.pdf"
+    )
+    assert not is_sharepoint_or_onedrive_url("https://graph.microsoft.com/v1.0/me")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_download_sharepoint_attachment_via_shares_api(graph_client: GraphClient) -> None:
+    content_url = (
+        "https://contoso.sharepoint.com/sites/Docs/Shared Documents/Test-pdf_4%201.pdf"
+    )
+    share_id = encode_sharing_url(content_url)
+    pdf_bytes = b"%PDF-1.4 test"
+
+    respx.get(f"{GRAPH_BASE_URL}/shares/{share_id}/driveItem").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "@microsoft.graph.downloadUrl": "https://contoso.sharepoint.com/download/file.pdf",
+                "file": {"mimeType": "application/pdf"},
+            },
+        )
+    )
+    respx.get("https://contoso.sharepoint.com/download/file.pdf").mock(
+        return_value=httpx.Response(200, content=pdf_bytes)
+    )
+
+    await graph_client.start()
+    try:
+        data, content_type = await graph_client.download_binary_url(content_url)
+        assert data == pdf_bytes
+        assert content_type == "application/pdf"
+    finally:
+        await graph_client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_download_sharepoint_falls_back_after_direct_401(graph_client: GraphClient) -> None:
+    content_url = "https://contoso-my.sharepoint.com/personal/user/Documents/file.pdf"
+    share_id = encode_sharing_url(content_url)
+    pdf_bytes = b"%PDF-1.4 fallback"
+
+    # SharePoint URLs are routed directly to shares API; simulate content-endpoint fallback.
+    respx.get(f"{GRAPH_BASE_URL}/shares/{share_id}/driveItem").mock(
+        return_value=httpx.Response(200, json={"file": {"mimeType": "application/pdf"}})
+    )
+    respx.get(f"{GRAPH_BASE_URL}/shares/{share_id}/driveItem/content").mock(
+        return_value=httpx.Response(
+            200,
+            content=pdf_bytes,
+            headers={"Content-Type": "application/pdf"},
+        )
+    )
+
+    await graph_client.start()
+    try:
+        data, content_type = await graph_client.download_binary_url(content_url)
+        assert data == pdf_bytes
+        assert content_type == "application/pdf"
     finally:
         await graph_client.close()

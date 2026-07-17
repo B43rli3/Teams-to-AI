@@ -13,7 +13,7 @@ from app.attachments import (
     extract_document_text,
 )
 from app.config import Settings, TeamsTargetMode
-from app.graph_client import GRAPH_BASE_URL, GraphClient
+from app.graph_client import GRAPH_BASE_URL, GraphClient, encode_sharing_url
 from app.message_parser import MessageParser
 from app.teams_service import TeamsMessage, TeamsService
 
@@ -115,6 +115,52 @@ async def test_download_and_classify_image() -> None:
         bundle = await processor.process_message_attachments(msg_id, html, [])
         assert len(bundle.images_base64) == 1
         assert bundle.images_base64[0] == base64.b64encode(png_bytes).decode("ascii")
+    finally:
+        await graph.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_download_pdf_attachment_via_sharepoint_url() -> None:
+    settings = Settings(
+        azure_tenant_id="t",
+        azure_client_id="c",
+        teams_target_mode=TeamsTargetMode.CHANNEL,
+        teams_team_id="team-1",
+        teams_channel_id="channel-1",
+        process_attachments=True,
+        process_documents=True,
+    )
+    content_url = (
+        "https://contoso.sharepoint.com/sites/Team/Shared Documents/Test-pdf_4 1.pdf"
+    )
+    share_id = encode_sharing_url(content_url)
+    pdf_bytes = b"Hallo aus der PDF-Testdatei"
+
+    respx.get(f"{GRAPH_BASE_URL}/shares/{share_id}/driveItem").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "@microsoft.graph.downloadUrl": "https://contoso.sharepoint.com/dl/file.pdf",
+                "file": {"mimeType": "text/plain"},
+            },
+        )
+    )
+    respx.get("https://contoso.sharepoint.com/dl/file.pdf").mock(
+        return_value=httpx.Response(200, content=pdf_bytes)
+    )
+
+    graph = GraphClient(token_provider=lambda: "tok", token_refresher=lambda: "tok")
+    await graph.start()
+    try:
+        processor = AttachmentProcessor(graph, settings)
+        bundle = await processor.process_message_attachments(
+            "msg-1",
+            "",
+            [{"name": "notiz.txt", "contentType": "reference", "contentUrl": content_url}],
+        )
+        assert len(bundle.document_texts) == 1
+        assert "Hallo aus der PDF-Testdatei" in bundle.document_texts[0]
     finally:
         await graph.close()
 

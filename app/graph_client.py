@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import random
 import time
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -16,6 +18,32 @@ from app.logging_config import get_logger
 logger = get_logger(__name__)
 
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
+
+_SHARE_HOST_MARKERS = (
+    "sharepoint.com",
+    "sharepoint.de",
+    "onedrive.com",
+    "onedrive.live.com",
+    "1drv.ms",
+)
+
+
+def encode_sharing_url(url: str) -> str:
+    """Kodiert eine SharePoint-/OneDrive-URL für die Graph-Shares-API."""
+    encoded = base64.b64encode(url.encode("utf-8")).decode("ascii")
+    encoded = encoded.rstrip("=").replace("/", "_").replace("+", "-")
+    return f"u!{encoded}"
+
+
+def is_sharepoint_or_onedrive_url(url: str) -> bool:
+    """Erkennt URLs, die typischerweise über /shares/.../driveItem geladen werden."""
+    try:
+        host = urlparse(url).netloc.lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    return any(marker in host for marker in _SHARE_HOST_MARKERS)
 
 
 class GraphClient:
@@ -225,8 +253,61 @@ class GraphClient:
         return await self._download_bytes(path)
 
     async def download_binary_url(self, url: str) -> tuple[bytes, str]:
-        """Lädt binäre Inhalte über eine absolute oder relative URL herunter."""
-        return await self._download_bytes(url)
+        """Lädt binäre Inhalte über Graph, Shares-API oder absolute URLs herunter."""
+        if is_sharepoint_or_onedrive_url(url):
+            return await self._download_via_shares_api(url)
+
+        try:
+            return await self._download_bytes(url)
+        except GraphAPIError as exc:
+            if exc.status_code == 401:
+                logger.info(
+                    "attachment_direct_download_unauthorized_try_shares",
+                    url_host=urlparse(url).netloc or "unknown",
+                )
+                return await self._download_via_shares_api(url)
+            raise
+
+    async def _download_via_shares_api(self, sharing_url: str) -> tuple[bytes, str]:
+        """Lädt SharePoint-/OneDrive-Dateien über GET /shares/.../driveItem."""
+        share_id = encode_sharing_url(sharing_url)
+        item = await self._request("GET", f"/shares/{share_id}/driveItem")
+        download_url = item.get("@microsoft.graph.downloadUrl")
+        if download_url:
+            content_type = str(item.get("file", {}).get("mimeType") or "application/octet-stream")
+            data = await self._download_public_url(str(download_url))
+            return data, content_type
+
+        return await self._download_bytes(f"/shares/{share_id}/driveItem/content")
+
+    async def _download_public_url(self, url: str) -> bytes:
+        """Lädt eine vorauthentifizierte Download-URL ohne Bearer-Token."""
+        last_error: Exception | None = None
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(60.0),
+                    follow_redirects=True,
+                ) as client:
+                    response = await client.get(url)
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", "30"))
+                    await asyncio.sleep(retry_after)
+                    continue
+                if response.status_code >= 400:
+                    raise GraphAPIError(
+                        f"Download-Fehler (HTTP {response.status_code})",
+                        status_code=response.status_code,
+                    )
+                return response.content
+            except GraphAPIError:
+                raise
+            except httpx.HTTPError as exc:
+                last_error = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(self._backoff_with_jitter(attempt))
+                    continue
+        raise GraphAPIError(f"Download fehlgeschlagen nach Retries: {last_error}")
 
     async def _download_bytes(self, url_or_path: str) -> tuple[bytes, str]:
         """Lädt Bytes mit Auth und Retry-Logik."""

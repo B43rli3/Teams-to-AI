@@ -206,7 +206,9 @@ class AttachmentProcessor:
                     kind="unsupported",
                     notes=(
                         f"[Anhang '{name}' konnte nicht heruntergeladen werden. "
-                        "Datei liegt ggf. in SharePoint und benötigt zusätzliche Graph-Rechte.]"
+                        "Für SharePoint-/OneDrive-Dateien GRAPH_SCOPES um Files.Read.All "
+                        "erweitern, Token-Cache löschen (data/msal_token_cache.json) "
+                        "und erneut 'python -m app.cli login' ausführen.]"
                     ),
                 )
 

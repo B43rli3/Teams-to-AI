@@ -490,6 +490,19 @@ Nur Nachrichten mit einer Teams-Erwähnung des in `BOT_MENTION_ID` konfigurierte
 | `Activate.ps1` → Ausführung von Skripts deaktiviert | PowerShell Execution Policy | `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` |
 | venv im Benutzerordner statt im Projekt | `python -m venv` im falschen Verzeichnis | `.venv` in `C:\Users\nuern` löschen, im Projektordner neu erstellen |
 
+### PDF-/Dateianhänge (SharePoint, 401 beim Download)
+
+Teams speichert Dateianhänge in SharePoint/OneDrive. Der direkte `contentUrl`-Download schlägt oft mit **401** fehl. Die Anwendung nutzt daher die Graph-**Shares-API** (`/shares/.../driveItem`).
+
+1. In `.env` (oder Config-UI) `Files.Read.All` zu `GRAPH_SCOPES` hinzufügen, z. B.:
+   ```env
+   GRAPH_SCOPES=User.Read,ChannelMessage.Read.All,ChannelMessage.Send,Files.Read.All
+   ```
+2. **Admin Consent** für `Files.Read.All` in Entra prüfen.
+3. Token-Cache löschen: `data\msal_token_cache.json`
+4. Neu anmelden: `python -m app.cli login`
+5. Anwendung neu starten und PDF erneut testen.
+
 ### HTTP 401 (Nicht autorisiert)
 
 - Token abgelaufen: Die Anwendung versucht automatisch eine Erneuerung.

@@ -170,7 +170,14 @@ class GraphClient:
         *,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Sendet eine Thread-Antwort unter einer Chat-Nachricht."""
+        """Sendet eine Antwort in einen Chat.
+
+        Hinweis: Gruppen-/1:1-Chats unterstützen im Gegensatz zu Kanälen keinen
+        Thread-Endpunkt `/messages/{id}/replies` (HTTP 405). Antworten werden
+        daher als neue Chat-Nachricht über `POST /chats/{id}/messages` gesendet.
+        `message_id` bleibt für die Signatur/Kompatibilität erhalten.
+        """
+        _ = message_id  # In Chats gibt es keine Thread-Replies wie in Kanälen.
         body: dict[str, Any] = {
             "body": {
                 "contentType": "html",
@@ -181,7 +188,7 @@ class GraphClient:
             body["attachments"] = attachments
         return await self._request(
             "POST",
-            f"/chats/{chat_id}/messages/{message_id}/replies",
+            f"/chats/{chat_id}/messages",
             json=body,
         )
 

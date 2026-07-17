@@ -349,6 +349,10 @@ python -m app.cli test-graph
 
 Eine **neue** Nachricht im Gruppen-Chat senden (bestehende werden bei `PROCESS_BACKLOG=false` nicht beantwortet).
 
+> **Hinweis:** In Gruppen-/1:1-Chats gibt es keine echten Threads wie im Team-Kanal.
+> Die Graph-API erlaubt dort kein `.../messages/{id}/replies` (HTTP 405).
+> Die Anwendung sendet die Antwort daher als **neue Nachricht** in denselben Chat.
+
 ---
 
 ## Erster Device-Code-Login

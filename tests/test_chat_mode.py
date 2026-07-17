@@ -57,7 +57,7 @@ async def test_get_chat_messages() -> None:
 @respx.mock
 async def test_send_chat_reply() -> None:
     chat_id = "19:groupchat@thread.v2"
-    respx.post(f"{GRAPH_BASE_URL}/chats/{chat_id}/messages/msg-1/replies").mock(
+    route = respx.post(f"{GRAPH_BASE_URL}/chats/{chat_id}/messages").mock(
         return_value=httpx.Response(201, json={"id": "reply-1"})
     )
     client = GraphClient(token_provider=lambda: "t", token_refresher=lambda: "t")
@@ -65,6 +65,10 @@ async def test_send_chat_reply() -> None:
     try:
         result = await client.send_chat_reply(chat_id, "msg-1", "<p>Hi</p>")
         assert result["id"] == "reply-1"
+        assert route.called
+        body = route.calls.last.request.content.decode("utf-8")
+        assert "<p>Hi</p>" in body
+        assert "/replies" not in str(route.calls.last.request.url)
     finally:
         await client.close()
 

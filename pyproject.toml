@@ -25,6 +25,7 @@ dependencies = [
     "structlog>=24.4.0",
     "pypdf>=5.0.0",
     "python-docx>=1.1.0",
+    "fpdf2>=2.8.0",
 ]
 
 [project.optional-dependencies]
@@ -70,5 +71,5 @@ module = ["msal.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["pypdf.*", "docx.*"]
+module = ["pypdf.*", "docx.*", "fpdf.*"]
 ignore_missing_imports = true

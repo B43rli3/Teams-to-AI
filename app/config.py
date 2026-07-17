@@ -40,7 +40,10 @@ class Settings(BaseSettings):
     # offline_access wird von MSAL automatisch hinzugefügt und darf nicht manuell übergeben werden.
     # Channel-Modus: User.Read,ChannelMessage.Read.All,ChannelMessage.Send
     # Chat-Modus:   User.Read,Chat.Read,Chat.ReadWrite
-    graph_scopes: str = "User.Read,ChannelMessage.Read.All,ChannelMessage.Send"
+    graph_scopes: str = (
+        "User.Read,ChannelMessage.Read.All,ChannelMessage.Send,"
+        "Files.Read.All,Files.ReadWrite"
+    )
 
     # channel = Team-Kanal | chat = Gruppen-/1:1-Chat
     teams_target_mode: TeamsTargetMode = TeamsTargetMode.CHANNEL
@@ -75,8 +78,10 @@ class Settings(BaseSettings):
 
     llm_system_prompt: str = (
         "Du bist ein hilfreicher interner Assistent in Microsoft Teams. "
-        "Antworte präzise, sachlich und auf Deutsch."
+        "Antworte präzise, sachlich und ausschließlich auf Deutsch."
     )
+    llm_force_german_retry: bool = True
+    send_pdf_replies: bool = True
     llm_max_context_messages: int = 10
     llm_max_response_characters: int = 12000
     llm_max_concurrency: int = 1

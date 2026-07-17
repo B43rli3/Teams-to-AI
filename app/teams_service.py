@@ -9,6 +9,7 @@ from app.config import Settings, TeamsTargetMode, TriggerMode
 from app.graph_client import GraphClient
 from app.logging_config import get_logger, truncate_id
 from app.message_parser import MessageParser, check_mention_trigger
+from app.teams_attachments import build_reference_attachment
 
 logger = get_logger(__name__)
 
@@ -135,6 +136,8 @@ class TeamsService:
         self,
         root_message_id: str,
         html_content: str,
+        *,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> str:
         """Sendet eine Thread-Antwort und gibt die Reply-ID zurück."""
         if self._settings.teams_target_mode == TeamsTargetMode.CHAT:
@@ -142,6 +145,7 @@ class TeamsService:
                 self._settings.teams_chat_id,
                 root_message_id,
                 html_content,
+                attachments=attachments,
             )
         else:
             result = await self._graph.send_channel_reply(
@@ -149,6 +153,7 @@ class TeamsService:
                 self._settings.teams_channel_id,
                 root_message_id,
                 html_content,
+                attachments=attachments,
             )
         reply_id = str(result.get("id", ""))
         logger.info(
@@ -156,8 +161,33 @@ class TeamsService:
             root_message_id=truncate_id(root_message_id),
             reply_id=truncate_id(reply_id),
             target_mode=self._settings.teams_target_mode.value,
+            attachments=len(attachments or []),
         )
         return reply_id
+
+    async def upload_pdf_reply(
+        self,
+        *,
+        filename: str,
+        pdf_bytes: bytes,
+    ) -> dict[str, str]:
+        """Lädt eine PDF in den Teams-Dateiordner hoch und liefert ein Attachment."""
+        if len(pdf_bytes) > self._settings.attachment_max_bytes:
+            raise ValueError(
+                f"PDF zu groß ({len(pdf_bytes)} Bytes, "
+                f"Limit {self._settings.attachment_max_bytes})."
+            )
+
+        drive_item = await self._graph.upload_file_to_files_folder(
+            filename=filename,
+            content=pdf_bytes,
+            content_type="application/pdf",
+            team_id=self._settings.teams_team_id or None,
+            channel_id=self._settings.teams_channel_id or None,
+            chat_id=self._settings.teams_chat_id or None,
+            target_mode=self._settings.teams_target_mode,
+        )
+        return build_reference_attachment(drive_item)
 
     def _check_trigger(self, message: TeamsMessage, cleaned_text: str) -> bool:
         """Prüft den konfigurierten Trigger-Modus."""

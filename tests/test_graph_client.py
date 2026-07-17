@@ -115,8 +115,62 @@ async def test_send_reply(graph_client: GraphClient) -> None:
 
     await graph_client.start()
     try:
-        result = await graph_client.send_reply("team-1", "channel-1", "msg-1", "<p>Test</p>")
+        result = await graph_client.send_reply(
+            "team-1",
+            "channel-1",
+            "msg-1",
+            "<p>Test</p>",
+            attachments=[
+                {
+                    "id": "668f7fa8-8129-4de7-b32b-fe1b442e6ef1",
+                    "contentType": "reference",
+                    "contentUrl": "https://contoso.sharepoint.com/file.pdf",
+                    "name": "file.pdf",
+                }
+            ],
+        )
         assert result["id"] == "reply-1"
+        body = respx.calls.last.request.content.decode("utf-8")
+        assert "attachments" in body
+    finally:
+        await graph_client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_upload_file_to_channel_files_folder(graph_client: GraphClient) -> None:
+    respx.get(f"{GRAPH_BASE_URL}/teams/team-1/channels/channel-1/filesFolder").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "folder-1",
+                "parentReference": {"driveId": "drive-1"},
+            },
+        )
+    )
+    respx.put(f"{GRAPH_BASE_URL}/drives/drive-1/items/folder-1:/antwort.pdf:/content").mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "id": "item-1",
+                "name": "antwort.pdf",
+                "eTag": '"668f7fa8-8129-4de7-b32b-fe1b442e6ef1",1"',
+                "webDavUrl": "https://contoso.sharepoint.com/antwort.pdf",
+            },
+        )
+    )
+
+    await graph_client.start()
+    try:
+        item = await graph_client.upload_file_to_files_folder(
+            filename="antwort.pdf",
+            content=b"%PDF-1.4",
+            content_type="application/pdf",
+            team_id="team-1",
+            channel_id="channel-1",
+            target_mode="channel",
+        )
+        assert item["name"] == "antwort.pdf"
     finally:
         await graph_client.close()
 

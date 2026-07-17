@@ -9,10 +9,15 @@ from datetime import UTC, datetime
 from app.attachments import AttachmentProcessor
 from app.config import Settings
 from app.exceptions import GraphAPIError, GraphPermissionError, OllamaError
+from app.language_guard import looks_predominantly_english
 from app.llm_client import OllamaClient
+from app.llm_prompts import GERMAN_RETRY_PROMPT, build_system_prompt
 from app.logging_config import get_logger, truncate_id, truncate_text
 from app.message_parser import MessageParser
+from app.pdf_export import default_pdf_filename, generate_pdf_from_text
+from app.reply_intent import wants_pdf_attachment
 from app.repository import Repository
+from app.teams_attachments import append_attachment_markup
 from app.teams_service import TeamsMessage, TeamsService
 
 logger = get_logger(__name__)
@@ -296,14 +301,16 @@ class PollingWorker:
                     }
                 )
 
-                system_prompt = self._settings.llm_system_prompt
-                if images:
-                    system_prompt = (
-                        f"{system_prompt}\n\n"
-                        "Der Benutzer kann Bilder anhängen. Beschreibe und nutze sichtbare "
-                        "Bildinhalte in deiner Antwort. Erfinde keine Details, die nicht "
-                        "im Bild erkennbar sind."
-                    )
+                wants_pdf = (
+                    self._settings.send_pdf_replies
+                    and wants_pdf_attachment(user_content)
+                )
+
+                system_prompt = build_system_prompt(
+                    self._settings.llm_system_prompt,
+                    include_image_hint=bool(images),
+                    include_pdf_hint=wants_pdf,
+                )
 
                 llm_response = await self._ollama.chat(
                     llm_messages,
@@ -311,11 +318,63 @@ class PollingWorker:
                     images=images or None,
                 )
 
+                if self._settings.llm_force_german_retry and looks_predominantly_english(
+                    llm_response
+                ):
+                    logger.info("llm_german_retry_triggered", message_id=truncate_id(message_id))
+                    llm_messages.append({"role": "assistant", "content": llm_response})
+                    llm_messages.append({"role": "user", "content": GERMAN_RETRY_PROMPT})
+                    llm_response = await self._ollama.chat(
+                        llm_messages,
+                        system_prompt=system_prompt,
+                        images=images or None,
+                    )
+
                 html_response = self._parser.format_llm_response_for_teams(llm_response)
+                attachments: list[dict[str, str]] | None = None
+
+                if wants_pdf:
+                    try:
+                        pdf_bytes = generate_pdf_from_text(
+                            title="KI-Antwort",
+                            body=llm_response,
+                        )
+                        pdf_name = default_pdf_filename(message_id=message_id)
+                        attachment = await self._teams.upload_pdf_reply(
+                            filename=pdf_name,
+                            pdf_bytes=pdf_bytes,
+                        )
+                        attachments = [attachment]
+                        html_response = append_attachment_markup(
+                            html_response,
+                            attachment["id"],
+                        )
+                        html_response = (
+                            f"{html_response}<p><em>PDF-Anhang: {attachment['name']}</em></p>"
+                        )
+                        logger.info(
+                            "pdf_reply_prepared",
+                            message_id=truncate_id(message_id),
+                            filename=attachment["name"],
+                            bytes=len(pdf_bytes),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "pdf_reply_failed",
+                            message_id=truncate_id(message_id),
+                            error=str(exc)[:200],
+                        )
+                        html_response = (
+                            f"{html_response}<p><em>"
+                            "[PDF konnte nicht erstellt oder hochgeladen werden: "
+                            f"{truncate_text(str(exc), 120)}]"
+                            "</em></p>"
+                        )
 
                 reply_id = await self._teams.send_thread_reply(
                     target.root_message_id,
                     html_response,
+                    attachments=attachments,
                 )
 
                 await self._repo.add_conversation_message(

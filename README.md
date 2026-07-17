@@ -653,6 +653,30 @@ Ohne `OLLAMA_VISION_MODEL` werden Bilder zwar übergeben, aber reine Text-Modell
 - Dateien aus SharePoint/OneDrive können zusätzliche Rechte brauchen (`Files.Read.All`) – sonst erscheint ein Hinweis in der Antwort/Log.
 - Große Anhänge werden anhand von `ATTACHMENT_MAX_BYTES` abgelehnt.
 
+### PDF-Antworten erstellen und senden
+
+Wenn der Benutzer eine PDF wünscht (z. B. „als PDF senden“, „PDF erstellen“), erzeugt die Anwendung automatisch eine PDF-Datei aus der LLM-Antwort, lädt sie in den Teams-Dateiordner hoch und hängt sie an die Thread-Antwort an.
+
+```env
+SEND_PDF_REPLIES=true
+GRAPH_SCOPES=User.Read,ChannelMessage.Read.All,ChannelMessage.Send,Files.Read.All,Files.ReadWrite
+```
+
+Beispiel:
+
+```
+/ai Fasse unsere Diskussion zusammen und sende das als PDF
+```
+
+Nach Scope-Änderungen: `data\msal_token_cache.json` löschen und `python -m app.cli login` ausführen.
+
+### Antwortsprache Deutsch
+
+Antworten sind verbindlich auf Deutsch. Dafür gelten:
+
+- Strenger System-Prompt (`LLM_SYSTEM_PROMPT`)
+- Automatischer Nachversuch bei erkannter englischer Antwort (`LLM_FORCE_GERMAN_RETRY=true`)
+
 ---
 
 ## Zukünftige Erweiterungen

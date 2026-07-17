@@ -144,14 +144,18 @@ class GraphClient:
         channel_id: str,
         message_id: str,
         html_content: str,
+        *,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Sendet eine Thread-Antwort unter einer Kanalnachricht."""
-        body = {
+        body: dict[str, Any] = {
             "body": {
                 "contentType": "html",
                 "content": html_content,
             }
         }
+        if attachments:
+            body["attachments"] = attachments
         return await self._request(
             "POST",
             f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies",
@@ -163,18 +167,77 @@ class GraphClient:
         chat_id: str,
         message_id: str,
         html_content: str,
+        *,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Sendet eine Thread-Antwort unter einer Chat-Nachricht."""
-        body = {
+        body: dict[str, Any] = {
             "body": {
                 "contentType": "html",
                 "content": html_content,
             }
         }
+        if attachments:
+            body["attachments"] = attachments
         return await self._request(
             "POST",
             f"/chats/{chat_id}/messages/{message_id}/replies",
             json=body,
+        )
+
+    async def get_channel_files_folder(self, team_id: str, channel_id: str) -> dict[str, Any]:
+        """Ruft den SharePoint-Dateiordner eines Kanals ab."""
+        return await self._request(
+            "GET",
+            f"/teams/{team_id}/channels/{channel_id}/filesFolder",
+            params={"$select": "id,name,parentReference,webDavUrl,webUrl,eTag"},
+        )
+
+    async def get_chat_files_folder(self, chat_id: str) -> dict[str, Any]:
+        """Ruft den Dateiordner eines Chats ab."""
+        return await self._request(
+            "GET",
+            f"/chats/{chat_id}/filesFolder",
+            params={"$select": "id,name,parentReference,webDavUrl,webUrl,eTag"},
+        )
+
+    async def upload_file_to_files_folder(
+        self,
+        *,
+        filename: str,
+        content: bytes,
+        content_type: str,
+        team_id: str | None = None,
+        channel_id: str | None = None,
+        chat_id: str | None = None,
+        target_mode: Any = "channel",
+    ) -> dict[str, Any]:
+        """Lädt eine Datei in den Teams-Dateiordner (Kanal oder Chat) hoch."""
+        mode_value = getattr(target_mode, "value", str(target_mode))
+        if mode_value == "chat":
+            if not chat_id:
+                raise GraphAPIError("TEAMS_CHAT_ID fehlt für Datei-Upload.")
+            folder = await self.get_chat_files_folder(chat_id)
+        else:
+            if not team_id or not channel_id:
+                raise GraphAPIError("Team- und Channel-ID fehlen für Datei-Upload.")
+            folder = await self.get_channel_files_folder(team_id, channel_id)
+
+        parent_ref = folder.get("parentReference", {}) or {}
+        drive_id = str(parent_ref.get("driveId") or "")
+        folder_id = str(folder.get("id") or "")
+        if not drive_id or not folder_id:
+            raise GraphAPIError("Dateiordner konnte nicht aufgelöst werden.")
+
+        from urllib.parse import quote
+
+        encoded_name = quote(filename, safe="")
+        path = f"/drives/{drive_id}/items/{folder_id}:/{encoded_name}:/content"
+        return await self._upload_bytes(
+            path,
+            content,
+            content_type=content_type,
+            params={"$select": "id,name,webDavUrl,webUrl,eTag,file"},
         )
 
     async def send_reply(
@@ -183,11 +246,102 @@ class GraphClient:
         channel_id: str,
         message_id: str,
         html_content: str,
+        *,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Alias für send_channel_reply (Abwärtskompatibilität)."""
         return await self.send_channel_reply(
-            team_id, channel_id, message_id, html_content
+            team_id,
+            channel_id,
+            message_id,
+            html_content,
+            attachments=attachments,
         )
+
+    async def _upload_bytes(
+        self,
+        path: str,
+        data: bytes,
+        *,
+        content_type: str,
+        params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Lädt binäre Inhalte per PUT auf Graph hoch."""
+        self._token_refreshed_for_request = False
+        last_error: Exception | None = None
+
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                return await self._do_upload_bytes(
+                    path,
+                    data,
+                    content_type=content_type,
+                    params=params,
+                )
+            except GraphPermissionError:
+                raise
+            except GraphAPIError as exc:
+                last_error = exc
+                if exc.status_code == 429:
+                    await asyncio.sleep(exc.retry_after or 30)
+                    continue
+                if exc.status_code == 401 and not self._token_refreshed_for_request:
+                    self._token_refresher()
+                    self._token_refreshed_for_request = True
+                    continue
+                if exc.status_code and exc.status_code >= 500 and attempt < self._max_retries:
+                    await asyncio.sleep(self._backoff_with_jitter(attempt))
+                    continue
+                raise
+            except httpx.HTTPError as exc:
+                last_error = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(self._backoff_with_jitter(attempt))
+                    continue
+
+        raise GraphAPIError(f"Upload fehlgeschlagen nach Retries: {last_error}")
+
+    async def _do_upload_bytes(
+        self,
+        path: str,
+        data: bytes,
+        *,
+        content_type: str,
+        params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        client = self._get_client()
+        token = self._token_provider()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": content_type,
+        }
+        response = await client.put(path, headers=headers, content=data, params=params)
+
+        if response.status_code == 401:
+            raise GraphAPIError("Nicht autorisiert (401) beim Upload.", status_code=401)
+        if response.status_code == 403:
+            raise GraphPermissionError(
+                "Zugriff verweigert (403) beim Datei-Upload. "
+                "Prüfen Sie Graph-Berechtigungen (Files.ReadWrite, ggf. Sites.ReadWrite.All).",
+                status_code=403,
+            )
+        if response.status_code == 429:
+            raise GraphAPIError(
+                "Rate Limit (429) beim Upload.",
+                status_code=429,
+                retry_after=int(response.headers.get("Retry-After", "30")),
+            )
+        if response.status_code >= 400:
+            error_data = self._parse_error(response)
+            raise GraphAPIError(
+                f"Upload-Fehler (HTTP {response.status_code}): "
+                f"{error_data.get('message', response.text[:200])}",
+                status_code=response.status_code,
+            )
+
+        if response.status_code == 204:
+            return {}
+        return dict(response.json())
 
     def _message_base_path(
         self,

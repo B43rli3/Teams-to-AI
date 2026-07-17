@@ -225,19 +225,31 @@ def _render_config_page(
         "TEAMS_CHAT_ID",
         "teams_chat_id",
         editable.teams_chat_id,
-        "Nur fuer TEAMS_TARGET_MODE=chat relevant",
+        "Legacy: einzelner Chat (optional, zusaetzlich zu TEAMS_CHAT_IDS)",
     )
     team_id_row = row(
         "TEAMS_TEAM_ID",
         "teams_team_id",
         editable.teams_team_id,
-        "Nur fuer TEAMS_TARGET_MODE=channel relevant",
+        "Legacy: einzelnes Team (optional, zusaetzlich zu TEAMS_CHANNELS)",
     )
     channel_id_row = row(
         "TEAMS_CHANNEL_ID",
         "teams_channel_id",
         editable.teams_channel_id,
-        "Nur fuer TEAMS_TARGET_MODE=channel relevant",
+        "Legacy: einzelner Kanal (optional, zusaetzlich zu TEAMS_CHANNELS)",
+    )
+    channels_row = row(
+        "TEAMS_CHANNELS",
+        "teams_channels",
+        editable.teams_channels,
+        "Mehrere Kanäle: teamId|channelId,teamId|channelId",
+    )
+    chat_ids_row = row(
+        "TEAMS_CHAT_IDS",
+        "teams_chat_ids",
+        editable.teams_chat_ids,
+        "Mehrere Chats: chatId1,chatId2",
     )
     bot_prefix_row = row(
         "BOT_PREFIX",
@@ -285,6 +297,11 @@ def _render_config_page(
           channel = Team-Kanal, chat = Gruppen- oder 1:1-Chat
         </div>
       </label>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        {channels_row}
+        {chat_ids_row}
+      </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
         {chat_id_row}
@@ -344,6 +361,8 @@ async def save_config(
     teams_chat_id: str = Form(""),
     teams_team_id: str = Form(""),
     teams_channel_id: str = Form(""),
+    teams_channels: str = Form(""),
+    teams_chat_ids: str = Form(""),
     trigger_mode: str = Form("all"),
     bot_prefix: str = Form("/ai"),
     ollama_vision_model: str = Form(""),
@@ -360,6 +379,8 @@ async def save_config(
             teams_chat_id=teams_chat_id,
             teams_team_id=teams_team_id,
             teams_channel_id=teams_channel_id,
+            teams_channels=teams_channels,
+            teams_chat_ids=teams_chat_ids,
             trigger_mode=trigger_mode,
             bot_prefix=bot_prefix,
             ollama_vision_model=ollama_vision_model,
@@ -457,6 +478,7 @@ async def status() -> StatusResponse:
         configured_team_id=app_state.settings.teams_team_id or None,
         configured_channel_id=app_state.settings.teams_channel_id or None,
         configured_chat_id=app_state.settings.teams_chat_id or None,
+        configured_targets=[t.key for t in app_state.settings.resolved_targets],
         ollama_model=app_state.settings.ollama_model,
         queued_messages=queued,
         failed_messages=failed,

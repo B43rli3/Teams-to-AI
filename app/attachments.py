@@ -12,6 +12,7 @@ from urllib.parse import unquote
 from app.config import Settings
 from app.graph_client import GraphClient
 from app.logging_config import get_logger, truncate_id, truncate_text
+from app.teams_targets import TeamsTarget
 
 logger = get_logger(__name__)
 
@@ -87,6 +88,8 @@ class AttachmentProcessor:
         message_id: str,
         body_html: str,
         attachments: list[dict[str, Any]],
+        *,
+        target: TeamsTarget | None = None,
     ) -> AttachmentBundle:
         """Verarbeitet Anhänge und Inline-Bilder einer Nachricht."""
         if not self._settings.process_attachments:
@@ -107,7 +110,7 @@ class AttachmentProcessor:
             if hosted_id in seen_ids:
                 continue
             seen_ids.add(hosted_id)
-            item = await self._process_hosted_content(message_id, hosted_id)
+            item = await self._process_hosted_content(message_id, hosted_id, target=target)
             self._merge_item(bundle, item)
             processed_count += 1
 
@@ -122,7 +125,7 @@ class AttachmentProcessor:
                 continue
             if att_id:
                 seen_ids.add(att_id)
-            item = await self._process_attachment_meta(message_id, raw)
+            item = await self._process_attachment_meta(message_id, raw, target=target)
             self._merge_item(bundle, item)
             processed_count += 1
 
@@ -146,18 +149,40 @@ class AttachmentProcessor:
         if item.notes:
             bundle.notes.append(item.notes)
 
+    def _resolve_target_ids(
+        self, target: TeamsTarget | None
+    ) -> tuple[str | None, str | None, str | None, Any]:
+        if target is not None:
+            return (
+                target.team_id or None,
+                target.channel_id or None,
+                target.chat_id or None,
+                target.kind,
+            )
+        return (
+            self._settings.teams_team_id or None,
+            self._settings.teams_channel_id or None,
+            self._settings.teams_chat_id or None,
+            self._settings.teams_target_mode,
+        )
+
     async def _process_hosted_content(
-        self, message_id: str, hosted_id: str
+        self,
+        message_id: str,
+        hosted_id: str,
+        *,
+        target: TeamsTarget | None = None,
     ) -> ProcessedAttachment:
         name = f"hosted-{truncate_id(hosted_id, 12)}"
+        team_id, channel_id, chat_id, target_mode = self._resolve_target_ids(target)
         try:
             data, content_type = await self._graph.download_hosted_content(
                 message_id=message_id,
                 hosted_content_id=hosted_id,
-                team_id=self._settings.teams_team_id or None,
-                channel_id=self._settings.teams_channel_id or None,
-                chat_id=self._settings.teams_chat_id or None,
-                target_mode=self._settings.teams_target_mode,
+                team_id=team_id,
+                channel_id=channel_id,
+                chat_id=chat_id,
+                target_mode=target_mode,
             )
         except Exception as exc:
             logger.warning(
@@ -174,7 +199,11 @@ class AttachmentProcessor:
         return self._classify_and_extract(name, data, content_type)
 
     async def _process_attachment_meta(
-        self, message_id: str, raw: dict[str, Any]
+        self,
+        message_id: str,
+        raw: dict[str, Any],
+        *,
+        target: TeamsTarget | None = None,
     ) -> ProcessedAttachment:
         name = str(raw.get("name") or "anhang")
         content_type = str(raw.get("contentType") or "").lower()
@@ -215,22 +244,23 @@ class AttachmentProcessor:
         # Teams speichert Bild-Upload oft nur als Reference ohne contentUrl.
         # Dann Hosted Contents nachladen.
         if data is None and "image" in content_type:
+            team_id, channel_id, chat_id, target_mode = self._resolve_target_ids(target)
             hosted_ids = await self._graph.list_hosted_content_ids(
                 message_id=message_id,
-                team_id=self._settings.teams_team_id or None,
-                channel_id=self._settings.teams_channel_id or None,
-                chat_id=self._settings.teams_chat_id or None,
-                target_mode=self._settings.teams_target_mode,
+                team_id=team_id,
+                channel_id=channel_id,
+                chat_id=chat_id,
+                target_mode=target_mode,
             )
             for hosted_id in hosted_ids:
                 try:
                     data, resolved_type = await self._graph.download_hosted_content(
                         message_id=message_id,
                         hosted_content_id=hosted_id,
-                        team_id=self._settings.teams_team_id or None,
-                        channel_id=self._settings.teams_channel_id or None,
-                        chat_id=self._settings.teams_chat_id or None,
-                        target_mode=self._settings.teams_target_mode,
+                        team_id=team_id,
+                        channel_id=channel_id,
+                        chat_id=chat_id,
+                        target_mode=target_mode,
                     )
                     break
                 except Exception:

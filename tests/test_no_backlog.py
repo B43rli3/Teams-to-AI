@@ -94,27 +94,20 @@ async def test_no_backlog_marks_existing_as_seen(setup_worker: dict) -> None:
     worker: PollingWorker = setup_worker["worker"]
     repo: Repository = setup_worker["repo"]
     teams: TeamsService = setup_worker["teams"]
+    target_key = "channel:team-1/channel-1"
 
     messages = [
         _graph_message("old-1", created="2026-01-01T09:00:00Z"),
         _graph_message("old-2", created="2026-01-01T09:01:00Z"),
     ]
-    teams._graph.get_channel_messages = AsyncMock(  # type: ignore[attr-defined]
-        return_value=[teams._parse_raw_message(m) for m in messages]
-    )
-
-    async def mock_fetch() -> list:
-        raw = await teams._graph.get_channel_messages("team-1", "channel-1", top=20)
-        return raw
-
-    teams.fetch_channel_messages = mock_fetch
+    teams._graph.get_channel_messages = AsyncMock(return_value=messages)
 
     new_count = await worker._do_poll()
     assert new_count == 0
-    assert await repo.is_message_known("old-1")
-    assert await repo.is_message_known("old-2")
-    assert await repo.get_message_status("old-1") == "seen"
-    assert await repo.is_initial_poll_done() is True
+    assert await repo.is_message_known("old-1", target_key=target_key)
+    assert await repo.is_message_known("old-2", target_key=target_key)
+    assert await repo.get_message_status("old-1", target_key=target_key) == "seen"
+    assert await repo.is_initial_poll_done(target_key=target_key) is True
 
 
 @pytest.mark.asyncio
@@ -122,19 +115,18 @@ async def test_new_message_queued_after_initial_poll(setup_worker: dict) -> None
     worker: PollingWorker = setup_worker["worker"]
     repo: Repository = setup_worker["repo"]
     teams: TeamsService = setup_worker["teams"]
+    target_key = "channel:team-1/channel-1"
 
-    await repo.mark_initial_poll_done()
+    await repo.mark_initial_poll_done(target_key=target_key)
 
     messages = [_graph_message("new-1", body="Neue Frage")]
-    parsed = [teams._parse_raw_message(m) for m in messages]
-
-    teams.fetch_channel_messages = AsyncMock(return_value=parsed)
+    teams._graph.get_channel_messages = AsyncMock(return_value=messages)
 
     with patch.object(worker, "_process_queued_messages", new_callable=AsyncMock):
         new_count = await worker._do_poll()
 
     assert new_count == 1
-    assert await repo.get_message_status("new-1") == "queued"
+    assert await repo.get_message_status("new-1", target_key=target_key) == "queued"
 
 
 @pytest.mark.asyncio
@@ -143,6 +135,7 @@ async def test_ollama_response_sent_as_reply(setup_worker: dict) -> None:
     worker: PollingWorker = setup_worker["worker"]
     repo: Repository = setup_worker["repo"]
     teams: TeamsService = setup_worker["teams"]
+    target_key = "channel:team-1/channel-1"
 
     await repo.insert_message(
         message_id="msg-1",
@@ -151,10 +144,11 @@ async def test_ollama_response_sent_as_reply(setup_worker: dict) -> None:
         sender_id="other-user",
         sender_name="User",
         status="queued",
+        target_key=target_key,
     )
 
-    parsed_msg = teams._parse_raw_message(_graph_message("msg-1", body="Was ist Python?"))
-    teams.fetch_channel_messages = AsyncMock(return_value=[parsed_msg])
+    messages = [_graph_message("msg-1", body="Was ist Python?")]
+    teams._graph.get_channel_messages = AsyncMock(return_value=messages)
 
     respx.post("http://127.0.0.1:11434/api/chat").mock(
         return_value=httpx.Response(
@@ -168,11 +162,11 @@ async def test_ollama_response_sent_as_reply(setup_worker: dict) -> None:
 
     await setup_worker["ollama"].start()
     try:
-        await worker._process_single_message("msg-1")
+        await worker._process_single_message("msg-1", target_key=target_key)
     finally:
         await setup_worker["ollama"].close()
 
-    assert await repo.get_message_status("msg-1") == "completed"
+    assert await repo.get_message_status("msg-1", target_key=target_key) == "completed"
     teams._graph.send_channel_reply.assert_called_once()
 
 
@@ -182,6 +176,7 @@ async def test_ollama_error_no_reply_posted(setup_worker: dict) -> None:
     worker: PollingWorker = setup_worker["worker"]
     repo: Repository = setup_worker["repo"]
     teams: TeamsService = setup_worker["teams"]
+    target_key = "channel:team-1/channel-1"
 
     await repo.insert_message(
         message_id="msg-1",
@@ -190,10 +185,11 @@ async def test_ollama_error_no_reply_posted(setup_worker: dict) -> None:
         sender_id="other-user",
         sender_name="User",
         status="queued",
+        target_key=target_key,
     )
 
-    parsed_msg = teams._parse_raw_message(_graph_message("msg-1"))
-    teams.fetch_channel_messages = AsyncMock(return_value=[parsed_msg])
+    messages = [_graph_message("msg-1")]
+    teams._graph.get_channel_messages = AsyncMock(return_value=messages)
 
     respx.post("http://127.0.0.1:11434/api/chat").mock(
         return_value=httpx.Response(500, text="Internal Server Error")
@@ -204,11 +200,11 @@ async def test_ollama_error_no_reply_posted(setup_worker: dict) -> None:
 
     await setup_worker["ollama"].start()
     try:
-        await worker._process_single_message("msg-1")
+        await worker._process_single_message("msg-1", target_key=target_key)
     finally:
         await setup_worker["ollama"].close()
 
-    assert await repo.get_message_status("msg-1") == "failed"
+    assert await repo.get_message_status("msg-1", target_key=target_key) == "failed"
     teams._graph.send_channel_reply.assert_not_called()
 
 

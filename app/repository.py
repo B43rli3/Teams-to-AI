@@ -50,7 +50,8 @@ class Repository:
         await conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS processed_messages (
-                message_id TEXT PRIMARY KEY,
+                target_key TEXT NOT NULL DEFAULT '',
+                message_id TEXT NOT NULL,
                 root_message_id TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 sender_id TEXT,
@@ -60,11 +61,13 @@ class Repository:
                 completed_at TEXT,
                 graph_reply_id TEXT,
                 error_message TEXT,
-                retry_count INTEGER DEFAULT 0
+                retry_count INTEGER DEFAULT 0,
+                PRIMARY KEY (target_key, message_id)
             );
 
             CREATE TABLE IF NOT EXISTS conversation_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_key TEXT NOT NULL DEFAULT '',
                 root_message_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
@@ -80,27 +83,128 @@ class Repository:
             CREATE INDEX IF NOT EXISTS idx_processed_status
                 ON processed_messages(status);
             CREATE INDEX IF NOT EXISTS idx_conversation_root
-                ON conversation_messages(root_message_id);
+                ON conversation_messages(target_key, root_message_id);
             """
         )
         await conn.commit()
+        await self._migrate_schema()
 
-    async def is_message_known(self, message_id: str) -> bool:
+    async def _migrate_schema(self) -> None:
+        """Migriert ältere Schemas ohne target_key / Composite-PK."""
+        conn = self._get_conn()
+        processed_cols = await self._table_columns("processed_messages")
+        if "target_key" not in processed_cols:
+            await self._rebuild_processed_messages_table()
+            processed_cols = await self._table_columns("processed_messages")
+
+        conversation_cols = await self._table_columns("conversation_messages")
+        if "target_key" not in conversation_cols:
+            await conn.execute(
+                "ALTER TABLE conversation_messages ADD COLUMN target_key TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.commit()
+
+        # Sicherstellen, dass processed_messages Composite-PK hat
+        if not await self._has_composite_processed_pk():
+            await self._rebuild_processed_messages_table()
+
+    async def _has_composite_processed_pk(self) -> bool:
+        conn = self._get_conn()
+        cursor = await conn.execute("PRAGMA table_info(processed_messages)")
+        rows = await cursor.fetchall()
+        pk_cols = [str(row["name"]) for row in rows if int(row["pk"] or 0) > 0]
+        return pk_cols == ["target_key", "message_id"] or set(pk_cols) == {
+            "target_key",
+            "message_id",
+        }
+
+    async def _rebuild_processed_messages_table(self) -> None:
+        """Baut processed_messages mit Composite-PK neu auf und übernimmt Daten."""
+        conn = self._get_conn()
+        cols = await self._table_columns("processed_messages")
+        has_target = "target_key" in cols
+        await conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS processed_messages_new (
+                target_key TEXT NOT NULL DEFAULT '',
+                message_id TEXT NOT NULL,
+                root_message_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                sender_id TEXT,
+                sender_name TEXT,
+                status TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                graph_reply_id TEXT,
+                error_message TEXT,
+                retry_count INTEGER DEFAULT 0,
+                PRIMARY KEY (target_key, message_id)
+            );
+            """
+        )
+        if has_target:
+            await conn.execute(
+                """
+                INSERT OR IGNORE INTO processed_messages_new
+                    (target_key, message_id, root_message_id, created_at, sender_id,
+                     sender_name, status, started_at, completed_at, graph_reply_id,
+                     error_message, retry_count)
+                SELECT
+                    COALESCE(target_key, ''), message_id, root_message_id, created_at,
+                    sender_id, sender_name, status, started_at, completed_at,
+                    graph_reply_id, error_message, retry_count
+                FROM processed_messages
+                """
+            )
+        else:
+            await conn.execute(
+                """
+                INSERT OR IGNORE INTO processed_messages_new
+                    (target_key, message_id, root_message_id, created_at, sender_id,
+                     sender_name, status, started_at, completed_at, graph_reply_id,
+                     error_message, retry_count)
+                SELECT
+                    '', message_id, root_message_id, created_at,
+                    sender_id, sender_name, status, started_at, completed_at,
+                    graph_reply_id, error_message, retry_count
+                FROM processed_messages
+                """
+            )
+        await conn.executescript(
+            """
+            DROP TABLE processed_messages;
+            ALTER TABLE processed_messages_new RENAME TO processed_messages;
+            CREATE INDEX IF NOT EXISTS idx_processed_status
+                ON processed_messages(status);
+            """
+        )
+        await conn.commit()
+        logger.info("processed_messages_schema_migrated")
+
+    async def _table_columns(self, table: str) -> set[str]:
+        conn = self._get_conn()
+        cursor = await conn.execute(f"PRAGMA table_info({table})")
+        rows = await cursor.fetchall()
+        return {str(row["name"]) for row in rows}
+
+    async def is_message_known(self, message_id: str, *, target_key: str = "") -> bool:
         """Prüft, ob eine Nachricht bereits bekannt ist."""
         conn = self._get_conn()
         cursor = await conn.execute(
-            "SELECT 1 FROM processed_messages WHERE message_id = ?",
-            (message_id,),
+            "SELECT 1 FROM processed_messages WHERE target_key = ? AND message_id = ?",
+            (target_key, message_id),
         )
         row = await cursor.fetchone()
         return row is not None
 
-    async def get_message_status(self, message_id: str) -> str | None:
+    async def get_message_status(
+        self, message_id: str, *, target_key: str = ""
+    ) -> str | None:
         """Gibt den Status einer Nachricht zurück."""
         conn = self._get_conn()
         cursor = await conn.execute(
-            "SELECT status FROM processed_messages WHERE message_id = ?",
-            (message_id,),
+            "SELECT status FROM processed_messages WHERE target_key = ? AND message_id = ?",
+            (target_key, message_id),
         )
         row = await cursor.fetchone()
         return str(row["status"]) if row else None
@@ -113,6 +217,8 @@ class Repository:
         sender_id: str,
         sender_name: str,
         status: str,
+        *,
+        target_key: str = "",
     ) -> bool:
         """Fügt eine Nachricht ein. Gibt False zurück bei Duplikat."""
         if status not in MESSAGE_STATUSES:
@@ -123,12 +229,13 @@ class Repository:
             await conn.execute(
                 """
                 INSERT INTO processed_messages
-                    (message_id, root_message_id, created_at, sender_id,
+                    (target_key, message_id, root_message_id, created_at, sender_id,
                      sender_name, status, started_at, completed_at,
                      graph_reply_id, error_message, retry_count)
-                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0)
                 """,
                 (
+                    target_key,
                     message_id,
                     root_message_id,
                     created_at,
@@ -141,13 +248,14 @@ class Repository:
             logger.info(
                 "message_status_changed",
                 message_id=truncate_id(message_id),
+                target_key=truncate_id(target_key, 40),
                 status=status,
             )
             return True
         except aiosqlite.IntegrityError:
             return False
 
-    async def try_claim_message(self, message_id: str) -> bool:
+    async def try_claim_message(self, message_id: str, *, target_key: str = "") -> bool:
         """Versucht atomar den Status von queued auf processing zu setzen."""
         conn = self._get_conn()
         now = _utc_now()
@@ -155,9 +263,9 @@ class Repository:
             """
             UPDATE processed_messages
             SET status = 'processing', started_at = ?
-            WHERE message_id = ? AND status = 'queued'
+            WHERE target_key = ? AND message_id = ? AND status = 'queued'
             """,
-            (now, message_id),
+            (now, target_key, message_id),
         )
         await conn.commit()
         claimed = cursor.rowcount == 1
@@ -165,6 +273,7 @@ class Repository:
             logger.info(
                 "message_status_changed",
                 message_id=truncate_id(message_id),
+                target_key=truncate_id(target_key, 40),
                 status="processing",
             )
         return claimed
@@ -173,6 +282,8 @@ class Repository:
         self,
         message_id: str,
         graph_reply_id: str,
+        *,
+        target_key: str = "",
     ) -> None:
         """Setzt den Status auf completed."""
         conn = self._get_conn()
@@ -181,14 +292,15 @@ class Repository:
             """
             UPDATE processed_messages
             SET status = 'completed', completed_at = ?, graph_reply_id = ?
-            WHERE message_id = ?
+            WHERE target_key = ? AND message_id = ?
             """,
-            (now, graph_reply_id, message_id),
+            (now, graph_reply_id, target_key, message_id),
         )
         await conn.commit()
         logger.info(
             "message_status_changed",
             message_id=truncate_id(message_id),
+            target_key=truncate_id(target_key, 40),
             status="completed",
         )
 
@@ -196,6 +308,8 @@ class Repository:
         self,
         message_id: str,
         error_message: str,
+        *,
+        target_key: str = "",
     ) -> None:
         """Setzt den Status auf failed."""
         conn = self._get_conn()
@@ -206,14 +320,15 @@ class Repository:
             UPDATE processed_messages
             SET status = 'failed', completed_at = ?, error_message = ?,
                 retry_count = retry_count + 1
-            WHERE message_id = ?
+            WHERE target_key = ? AND message_id = ?
             """,
-            (now, truncated_error, message_id),
+            (now, truncated_error, target_key, message_id),
         )
         await conn.commit()
         logger.info(
             "message_status_changed",
             message_id=truncate_id(message_id),
+            target_key=truncate_id(target_key, 40),
             status="failed",
         )
 
@@ -251,30 +366,44 @@ class Repository:
         )
         await conn.commit()
 
-    async def is_initial_poll_done(self) -> bool:
-        """Prüft, ob der erste Poll bereits erfolgt ist."""
-        value = await self.get_service_state("initial_poll_done")
-        return value == "true"
+    def _initial_poll_key(self, target_key: str = "") -> str:
+        if target_key:
+            return f"initial_poll_done:{target_key}"
+        return "initial_poll_done"
 
-    async def mark_initial_poll_done(self) -> None:
+    async def is_initial_poll_done(self, *, target_key: str = "") -> bool:
+        """Prüft, ob der erste Poll für ein Ziel bereits erfolgt ist."""
+        value = await self.get_service_state(self._initial_poll_key(target_key))
+        if value == "true":
+            return True
+        # Legacy-Kompatibilität: globaler Flag gilt für leeren target_key
+        if target_key:
+            legacy = await self.get_service_state("initial_poll_done")
+            return legacy == "true"
+        return False
+
+    async def mark_initial_poll_done(self, *, target_key: str = "") -> None:
         """Markiert den ersten Poll als abgeschlossen."""
-        await self.set_service_state("initial_poll_done", "true")
+        await self.set_service_state(self._initial_poll_key(target_key), "true")
 
     async def add_conversation_message(
         self,
         root_message_id: str,
         role: str,
         content: str,
+        *,
+        target_key: str = "",
     ) -> None:
         """Fügt eine Nachricht zum Gesprächskontext hinzu."""
         conn = self._get_conn()
         now = _utc_now()
         await conn.execute(
             """
-            INSERT INTO conversation_messages (root_message_id, role, content, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO conversation_messages
+                (target_key, root_message_id, role, content, created_at)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (root_message_id, role, content, now),
+            (target_key, root_message_id, role, content, now),
         )
         await conn.commit()
 
@@ -282,17 +411,19 @@ class Repository:
         self,
         root_message_id: str,
         limit: int = 10,
+        *,
+        target_key: str = "",
     ) -> list[dict[str, str]]:
         """Gibt den Gesprächskontext für eine Root-Nachricht zurück."""
         conn = self._get_conn()
         cursor = await conn.execute(
             """
             SELECT role, content FROM conversation_messages
-            WHERE root_message_id = ?
+            WHERE target_key = ? AND root_message_id = ?
             ORDER BY id ASC
             LIMIT ?
             """,
-            (root_message_id, limit),
+            (target_key, root_message_id, limit),
         )
         rows = await cursor.fetchall()
         return [{"role": str(r["role"]), "content": str(r["content"])} for r in rows]
@@ -302,7 +433,7 @@ class Repository:
         conn = self._get_conn()
         cursor = await conn.execute(
             """
-            SELECT message_id, status, error_message, completed_at
+            SELECT target_key, message_id, status, error_message, completed_at
             FROM processed_messages
             WHERE status = 'failed' AND error_message IS NOT NULL
             ORDER BY completed_at DESC
@@ -313,6 +444,7 @@ class Repository:
         rows = await cursor.fetchall()
         return [
             {
+                "target_key": truncate_id(str(r["target_key"] or ""), 40),
                 "message_id": truncate_id(str(r["message_id"])),
                 "status": str(r["status"]),
                 "error_message": str(r["error_message"])[:200] if r["error_message"] else "",
@@ -321,20 +453,44 @@ class Repository:
             for r in rows
         ]
 
-    async def reset_watermark(self) -> None:
+    async def reset_watermark(self, *, target_key: str | None = None) -> None:
         """Setzt den Polling-Startpunkt zurück."""
         conn = self._get_conn()
-        await conn.execute("DELETE FROM service_state WHERE key = 'initial_poll_done'")
+        if target_key is None:
+            await conn.execute(
+                "DELETE FROM service_state WHERE key = 'initial_poll_done' "
+                "OR key LIKE 'initial_poll_done:%'"
+            )
+        else:
+            await conn.execute(
+                "DELETE FROM service_state WHERE key = ?",
+                (self._initial_poll_key(target_key),),
+            )
         await conn.commit()
 
-    async def get_queued_message_ids(self) -> list[str]:
-        """Gibt IDs aller queued Nachrichten in chronologischer Reihenfolge zurück."""
+    async def get_queued_messages(self) -> list[dict[str, str]]:
+        """Gibt queued Nachrichten inkl. target_key in chronologischer Reihenfolge zurück."""
         conn = self._get_conn()
         cursor = await conn.execute(
-            "SELECT message_id FROM processed_messages WHERE status = 'queued' ORDER BY created_at"
+            """
+            SELECT target_key, message_id FROM processed_messages
+            WHERE status = 'queued'
+            ORDER BY created_at
+            """
         )
         rows = await cursor.fetchall()
-        return [str(r["message_id"]) for r in rows]
+        return [
+            {
+                "target_key": str(r["target_key"] or ""),
+                "message_id": str(r["message_id"]),
+            }
+            for r in rows
+        ]
+
+    async def get_queued_message_ids(self) -> list[str]:
+        """Gibt IDs aller queued Nachrichten zurück (Abwärtskompatibilität)."""
+        queued = await self.get_queued_messages()
+        return [item["message_id"] for item in queued]
 
     async def health_check(self) -> bool:
         """Prüft die Datenbankverbindung."""

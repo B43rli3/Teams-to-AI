@@ -298,7 +298,22 @@ Tragen Sie die gewünschten IDs in `.env` ein.
 
 ## Alternativ: Gruppen-Chat statt Team-Kanal
 
-Die Anwendung kann statt eines Team-Kanals einen **Gruppen-Chat** (oder 1:1-Chat) pollen.
+Die Anwendung kann statt eines Team-Kanals einen **Gruppen-Chat** (oder 1:1-Chat) pollen — oder **mehrere Kanäle und Chats gleichzeitig**.
+
+### Mehrere Ziele gleichzeitig
+
+```env
+# Mehrere Kanäle: teamId|channelId,teamId|channelId
+TEAMS_CHANNELS=TEAM-ID-1|CHANNEL-ID-1,TEAM-ID-1|CHANNEL-ID-2
+
+# Mehrere Chats: chatId1,chatId2
+TEAMS_CHAT_IDS=19:chat1@thread.v2,19:chat2@thread.v2
+
+# Empfohlene Scopes wenn Kanäle und Chats gemischt werden:
+GRAPH_SCOPES=User.Read,ChannelMessage.Read.All,ChannelMessage.Send,Chat.ReadWrite,Files.Read.All
+```
+
+Legacy-Einzelwerte (`TEAMS_TEAM_ID` / `TEAMS_CHANNEL_ID` / `TEAMS_CHAT_ID`) funktionieren weiterhin und werden mit den Listen zusammengeführt.
 
 ### 1. Entra-Berechtigungen für Chats
 

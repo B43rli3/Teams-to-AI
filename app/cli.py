@@ -201,7 +201,7 @@ async def cmd_discover_chats(_args: argparse.Namespace) -> int:
 
 
 async def cmd_test_graph(_args: argparse.Namespace) -> int:
-    """Prüft Graph-Zugriff auf den konfigurierten Kanal oder Chat."""
+    """Prüft Graph-Zugriff auf die konfigurierten Ziele."""
     settings = get_settings()
     configure_logging(settings.log_level)
     settings.validate_for_runtime()
@@ -210,25 +210,31 @@ async def cmd_test_graph(_args: argparse.Namespace) -> int:
 
     await client.start()
     try:
-        if settings.is_chat_mode:
-            messages = await client.get_chat_messages(
-                settings.teams_chat_id,
-                top=5,
+        targets = settings.resolved_targets
+        if not targets:
+            print("Keine Ziele konfiguriert.")
+            return 1
+
+        for target in targets:
+            if target.kind.value == "chat":
+                messages = await client.get_chat_messages(target.chat_id, top=5)
+                label = f"Chat {target.chat_id[:40]}…"
+            else:
+                messages = await client.get_channel_messages(
+                    target.team_id,
+                    target.channel_id,
+                    top=5,
+                )
+                label = f"Kanal {target.channel_id[:30]}…"
+            print(
+                f"Graph-Verbindung OK ({label}). "
+                f"{len(messages)} Nachrichten abgerufen (max. 5)."
             )
-            target = f"Chat {settings.teams_chat_id[:40]}…"
-        else:
-            messages = await client.get_channel_messages(
-                settings.teams_team_id,
-                settings.teams_channel_id,
-                top=5,
-            )
-            target = "Kanal"
-        print(f"Graph-Verbindung OK ({target}). {len(messages)} Nachrichten abgerufen (max. 5).")
-        for msg in messages[:3]:
-            msg_id = str(msg.get("id", ""))[:12]
-            created = str(msg.get("createdDateTime", ""))
-            msg_type = str(msg.get("messageType", ""))
-            print(f"  - {msg_id}… | {created} | {msg_type}")
+            for msg in messages[:3]:
+                msg_id = str(msg.get("id", ""))[:12]
+                created = str(msg.get("createdDateTime", ""))
+                msg_type = str(msg.get("messageType", ""))
+                print(f"  - {msg_id}… | {created} | {msg_type}")
         return 0
     except Exception as exc:
         print(f"Graph-Test fehlgeschlagen: {exc}")

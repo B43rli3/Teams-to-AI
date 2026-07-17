@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.exceptions import ConfigurationError
+
+if TYPE_CHECKING:
+    from app.teams_targets import TeamsTarget
 
 
 class TriggerMode(StrEnum):
@@ -46,10 +50,16 @@ class Settings(BaseSettings):
     )
 
     # channel = Team-Kanal | chat = Gruppen-/1:1-Chat
+    # Bei mehreren Zielen: TEAMS_CHANNELS und/oder TEAMS_CHAT_IDS setzen.
+    # Legacy-Einzelwerte (TEAMS_TEAM_ID/CHANNEL_ID/CHAT_ID) bleiben gültig.
     teams_target_mode: TeamsTargetMode = TeamsTargetMode.CHANNEL
     teams_team_id: str = ""
     teams_channel_id: str = ""
     teams_chat_id: str = ""
+    # Mehrere Kanäle: teamId|channelId,teamId|channelId
+    teams_channels: str = ""
+    # Mehrere Chats: chatId1,chatId2
+    teams_chat_ids: str = ""
 
     poll_interval_seconds: int = 10
     poll_page_size: int = 20
@@ -115,17 +125,47 @@ class Settings(BaseSettings):
         return [s.strip() for s in self.graph_scopes.split(",") if s.strip()]
 
     @property
+    def resolved_targets(self) -> list[TeamsTarget]:
+        """Gibt alle konfigurierten Überwachungsziele zurück."""
+        from app.teams_targets import resolve_teams_targets
+
+        return resolve_teams_targets(
+            teams_channels=self.teams_channels,
+            teams_chat_ids=self.teams_chat_ids,
+            teams_target_mode=self.teams_target_mode,
+            teams_team_id=self.teams_team_id,
+            teams_channel_id=self.teams_channel_id,
+            teams_chat_id=self.teams_chat_id,
+        )
+
+    @property
     def discovery_scopes(self) -> list[str]:
         base = set(self.graph_scope_list)
-        if self.teams_target_mode == TeamsTargetMode.CHAT:
-            base.update(["Chat.Read", "Chat.ReadBasic"])
-        else:
+        targets = self.resolved_targets
+        has_chat = any(t.kind == TeamsTargetMode.CHAT for t in targets) or (
+            self.teams_target_mode == TeamsTargetMode.CHAT
+        )
+        has_channel = any(t.kind == TeamsTargetMode.CHANNEL for t in targets) or (
+            self.teams_target_mode == TeamsTargetMode.CHANNEL
+        )
+        if has_chat:
+            base.update(["Chat.Read", "Chat.ReadBasic", "Chat.ReadWrite"])
+        if has_channel:
             base.update(["Team.ReadBasic.All", "Channel.ReadBasic.All"])
         return sorted(base)
 
     @property
     def is_chat_mode(self) -> bool:
+        targets = self.resolved_targets
+        if targets:
+            return all(t.kind == TeamsTargetMode.CHAT for t in targets)
         return self.teams_target_mode == TeamsTargetMode.CHAT
+
+    @property
+    def has_mixed_targets(self) -> bool:
+        targets = self.resolved_targets
+        kinds = {t.kind for t in targets}
+        return TeamsTargetMode.CHAT in kinds and TeamsTargetMode.CHANNEL in kinds
 
     @property
     def database_path_obj(self) -> Path:
@@ -148,17 +188,39 @@ class Settings(BaseSettings):
         if not self.azure_client_id:
             errors.append("AZURE_CLIENT_ID ist nicht gesetzt.")
         if require_teams:
-            if self.teams_target_mode == TeamsTargetMode.CHAT:
-                if not self.teams_chat_id:
+            try:
+                targets = self.resolved_targets
+            except ValueError as exc:
+                errors.append(str(exc))
+                targets = []
+
+            if not targets:
+                if self.teams_channels.strip() or self.teams_chat_ids.strip():
                     errors.append(
-                        "TEAMS_CHAT_ID ist nicht gesetzt "
-                        "(erforderlich bei TEAMS_TARGET_MODE=chat)."
+                        "TEAMS_CHANNELS / TEAMS_CHAT_IDS konnten nicht aufgelöst werden."
                     )
-            else:
-                if not self.teams_team_id:
-                    errors.append("TEAMS_TEAM_ID ist nicht gesetzt.")
-                if not self.teams_channel_id:
-                    errors.append("TEAMS_CHANNEL_ID ist nicht gesetzt.")
+                elif self.teams_target_mode == TeamsTargetMode.CHAT:
+                    if not self.teams_chat_id:
+                        errors.append(
+                            "TEAMS_CHAT_ID oder TEAMS_CHAT_IDS ist erforderlich "
+                            "(bei TEAMS_TARGET_MODE=chat)."
+                        )
+                else:
+                    if not self.teams_team_id and not self.teams_channels:
+                        errors.append(
+                            "TEAMS_TEAM_ID+TEAMS_CHANNEL_ID oder TEAMS_CHANNELS "
+                            "ist erforderlich."
+                        )
+                    elif self.teams_team_id and not self.teams_channel_id:
+                        errors.append("TEAMS_CHANNEL_ID ist nicht gesetzt.")
+                    elif self.teams_channel_id and not self.teams_team_id:
+                        errors.append("TEAMS_TEAM_ID ist nicht gesetzt.")
+                    else:
+                        errors.append(
+                            "Kein Überwachungsziel konfiguriert. "
+                            "Setzen Sie TEAMS_CHANNELS und/oder TEAMS_CHAT_IDS "
+                            "oder die Legacy-Einzelwerte."
+                        )
         if self.poll_interval_seconds < 1:
             errors.append("POLL_INTERVAL_SECONDS muss mindestens 1 sein.")
         if self.poll_page_size < 1:

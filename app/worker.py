@@ -19,6 +19,7 @@ from app.reply_intent import wants_pdf_attachment
 from app.repository import Repository
 from app.teams_attachments import append_attachment_markup
 from app.teams_service import TeamsMessage, TeamsService
+from app.teams_targets import TeamsTarget
 
 logger = get_logger(__name__)
 
@@ -67,7 +68,11 @@ class PollingWorker:
             return
         self._running = True
         self._task = asyncio.create_task(self._poll_loop())
-        logger.info("polling_worker_started", interval=self._settings.poll_interval_seconds)
+        logger.info(
+            "polling_worker_started",
+            interval=self._settings.poll_interval_seconds,
+            targets=len(self._teams.get_targets()),
+        )
 
     async def stop(self) -> None:
         """Stoppt den Polling-Worker sauber."""
@@ -105,17 +110,30 @@ class PollingWorker:
                 await asyncio.sleep(self._settings.poll_interval_seconds)
 
     async def _do_poll(self) -> int:
-        """Führt einen einzelnen Poll-Zyklus aus."""
+        """Führt einen einzelnen Poll-Zyklus über alle Ziele aus."""
         if self._permission_error:
             return 0
 
         try:
-            messages = await self._teams.fetch_channel_messages()
-            new_count = await self._process_polled_messages(messages)
+            total_new = 0
+            total_fetched = 0
+            for target in self._teams.get_targets():
+                messages = await self._teams.fetch_messages_for_target(target)
+                total_fetched += len(messages)
+                total_new += await self._process_polled_messages(
+                    messages, target_key=target.key
+                )
+
             self._last_successful_poll = datetime.now(UTC).isoformat()
             self._last_poll_error = None
-            logger.info("poll_completed", new_messages=new_count, total_fetched=len(messages))
-            return new_count
+            logger.info(
+                "poll_completed",
+                new_messages=total_new,
+                total_fetched=total_fetched,
+                targets=len(self._teams.get_targets()),
+            )
+            await self._process_queued_messages()
+            return total_new
         except GraphPermissionError:
             raise
         except GraphAPIError as exc:
@@ -127,14 +145,21 @@ class PollingWorker:
             logger.error("poll_error", error=str(exc)[:200])
             raise
 
-    async def _process_polled_messages(self, messages: list[TeamsMessage]) -> int:
-        """Verarbeitet abgerufene Nachrichten."""
-        initial_poll_done = await self._repo.is_initial_poll_done()
+    async def _process_polled_messages(
+        self,
+        messages: list[TeamsMessage],
+        *,
+        target_key: str,
+    ) -> int:
+        """Verarbeitet abgerufene Nachrichten eines Ziels."""
+        initial_poll_done = await self._repo.is_initial_poll_done(target_key=target_key)
         new_messages = 0
 
         unknown_messages: list[TeamsMessage] = []
         for message in messages:
-            known = await self._repo.is_message_known(message.id)
+            known = await self._repo.is_message_known(
+                message.id, target_key=target_key
+            )
             if not known:
                 unknown_messages.append(message)
 
@@ -147,11 +172,13 @@ class PollingWorker:
                     sender_id=message.sender_id,
                     sender_name=message.sender_name,
                     status="seen",
+                    target_key=target_key,
                 )
-            await self._repo.mark_initial_poll_done()
+            await self._repo.mark_initial_poll_done(target_key=target_key)
             logger.info(
                 "initial_poll_backlog_skipped",
                 marked_seen=len(unknown_messages),
+                target_key=truncate_id(target_key, 40),
             )
             return 0
 
@@ -169,6 +196,7 @@ class PollingWorker:
                     sender_id=message.sender_id,
                     sender_name=message.sender_name,
                     status=status,
+                    target_key=target_key,
                 )
                 if inserted and should_process:
                     new_messages += 1
@@ -177,6 +205,7 @@ class PollingWorker:
                         "message_ignored",
                         message_id=truncate_id(message.id),
                         reason=reason,
+                        target_key=truncate_id(target_key, 40),
                     )
 
             for message in unknown_messages[self._settings.backlog_limit :]:
@@ -187,9 +216,10 @@ class PollingWorker:
                     sender_id=message.sender_id,
                     sender_name=message.sender_name,
                     status="seen",
+                    target_key=target_key,
                 )
 
-            await self._repo.mark_initial_poll_done()
+            await self._repo.mark_initial_poll_done(target_key=target_key)
         else:
             for message in unknown_messages:
                 should_process, reason = self._teams.should_process_message(
@@ -208,6 +238,7 @@ class PollingWorker:
                     sender_id=message.sender_id,
                     sender_name=message.sender_name,
                     status=status,
+                    target_key=target_key,
                 )
                 if inserted and should_process:
                     new_messages += 1
@@ -216,52 +247,88 @@ class PollingWorker:
                         "message_ignored",
                         message_id=truncate_id(message.id),
                         reason=reason,
+                        target_key=truncate_id(target_key, 40),
                     )
 
-        await self._process_queued_messages()
         return new_messages
 
     async def _process_queued_messages(self) -> None:
         """Verarbeitet alle queued Nachrichten."""
-        message_ids = await self._repo.get_queued_message_ids()
-        for message_id in message_ids:
-            await self._process_single_message(message_id)
+        queued = await self._repo.get_queued_messages()
+        for item in queued:
+            await self._process_single_message(
+                item["message_id"],
+                target_key=item["target_key"],
+            )
 
-    async def _process_single_message(self, message_id: str) -> None:
+    def _find_target(self, target_key: str) -> TeamsTarget | None:
+        for target in self._teams.get_targets():
+            if target.key == target_key:
+                return target
+        return None
+
+    async def _process_single_message(
+        self,
+        message_id: str,
+        *,
+        target_key: str = "",
+    ) -> None:
         """Verarbeitet eine einzelne Nachricht."""
-        claimed = await self._repo.try_claim_message(message_id)
+        claimed = await self._repo.try_claim_message(
+            message_id, target_key=target_key
+        )
         if not claimed:
+            return
+
+        target = self._find_target(target_key)
+        if target is None and target_key:
+            await self._repo.update_message_failed(
+                message_id,
+                f"Ziel nicht mehr konfiguriert: {target_key}",
+                target_key=target_key,
+            )
             return
 
         async with self._llm_semaphore:
             try:
-                messages = await self._teams.fetch_channel_messages()
-                target = next((m for m in messages if m.id == message_id), None)
+                if target is not None:
+                    messages = await self._teams.fetch_messages_for_target(target)
+                else:
+                    messages = await self._teams.fetch_channel_messages()
+                target_msg = next((m for m in messages if m.id == message_id), None)
 
-                if target is None:
+                if target_msg is None:
                     await self._repo.update_message_failed(
-                        message_id, "Nachricht nicht mehr im Kanal gefunden."
+                        message_id,
+                        "Nachricht nicht mehr gefunden.",
+                        target_key=target_key,
                     )
                     return
 
-                status = await self._repo.get_message_status(message_id)
+                status = await self._repo.get_message_status(
+                    message_id, target_key=target_key
+                )
                 if status == "completed":
                     return
 
-                clean_text = self._teams.extract_clean_text(target)
+                clean_text = self._teams.extract_clean_text(target_msg)
                 if clean_text is None:
                     await self._repo.update_message_failed(
-                        message_id, "Kein verwertbarer Textinhalt."
+                        message_id,
+                        "Kein verwertbarer Textinhalt.",
+                        target_key=target_key,
                     )
                     return
 
+                effective_target = target_msg.target or target
                 attachment_bundle = None
                 images: list[str] = []
                 if self._settings.process_attachments and self._attachments is not None:
                     attachment_bundle = await self._attachments.process_message_attachments(
-                        message_id=target.id,
-                        body_html=target.body_content,
-                        attachments=target.attachments,
+                        message_id=target_msg.id,
+                        body_html=target_msg.body_content,
+                        attachments=target_msg.attachments,
+                        target=effective_target,
                     )
                     images = attachment_bundle.images_base64
 
@@ -279,13 +346,16 @@ class PollingWorker:
 
                 if not user_content.strip() and not images:
                     await self._repo.update_message_failed(
-                        message_id, "Kein Text und keine verwertbaren Anhänge."
+                        message_id,
+                        "Kein Text und keine verwertbaren Anhänge.",
+                        target_key=target_key,
                     )
                     return
 
                 context = await self._repo.get_conversation_messages(
-                    target.root_message_id,
+                    target_msg.root_message_id,
                     limit=self._settings.llm_max_context_messages,
+                    target_key=target_key,
                 )
 
                 llm_messages: list[dict[str, str]] = []
@@ -343,6 +413,7 @@ class PollingWorker:
                         attachment = await self._teams.upload_pdf_reply(
                             filename=pdf_name,
                             pdf_bytes=pdf_bytes,
+                            target=effective_target,
                         )
                         attachments = [attachment]
                         html_response = append_attachment_markup(
@@ -372,42 +443,58 @@ class PollingWorker:
                         )
 
                 reply_id = await self._teams.send_thread_reply(
-                    target.root_message_id,
+                    target_msg.root_message_id,
                     html_response,
                     attachments=attachments,
+                    target=effective_target,
                 )
 
                 await self._repo.add_conversation_message(
-                    target.root_message_id, "user", user_content or "[Bildanhang]"
+                    target_msg.root_message_id,
+                    "user",
+                    user_content or "[Bildanhang]",
+                    target_key=target_key,
                 )
                 await self._repo.add_conversation_message(
-                    target.root_message_id, "assistant", llm_response
+                    target_msg.root_message_id,
+                    "assistant",
+                    llm_response,
+                    target_key=target_key,
                 )
-                await self._repo.update_message_completed(message_id, reply_id)
+                await self._repo.update_message_completed(
+                    message_id, reply_id, target_key=target_key
+                )
 
                 logger.info(
                     "message_processed",
                     message_id=truncate_id(message_id),
                     preview=truncate_text(user_content or "[bild]"),
                     images=len(images),
+                    target_key=truncate_id(target_key, 40),
                 )
 
             except OllamaError as exc:
-                await self._repo.update_message_failed(message_id, f"Ollama-Fehler: {exc}")
+                await self._repo.update_message_failed(
+                    message_id, f"Ollama-Fehler: {exc}", target_key=target_key
+                )
                 logger.error(
                     "ollama_processing_error",
                     message_id=truncate_id(message_id),
                     error=str(exc)[:200],
                 )
             except GraphAPIError as exc:
-                await self._repo.update_message_failed(message_id, f"Graph-Fehler: {exc}")
+                await self._repo.update_message_failed(
+                    message_id, f"Graph-Fehler: {exc}", target_key=target_key
+                )
                 logger.error(
                     "graph_processing_error",
                     message_id=truncate_id(message_id),
                     error=str(exc)[:200],
                 )
             except Exception as exc:
-                await self._repo.update_message_failed(message_id, f"Verarbeitungsfehler: {exc}")
+                await self._repo.update_message_failed(
+                    message_id, f"Verarbeitungsfehler: {exc}", target_key=target_key
+                )
                 logger.error(
                     "processing_error",
                     message_id=truncate_id(message_id),

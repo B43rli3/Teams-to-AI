@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.config import Settings, TeamsTargetMode, TriggerMode
+from app.teams_targets import resolve_teams_targets
 
 EDITABLE_ENV_KEYS = (
     "AZURE_TENANT_ID",
@@ -15,6 +16,8 @@ EDITABLE_ENV_KEYS = (
     "TEAMS_CHAT_ID",
     "TEAMS_TEAM_ID",
     "TEAMS_CHANNEL_ID",
+    "TEAMS_CHANNELS",
+    "TEAMS_CHAT_IDS",
     "TRIGGER_MODE",
     "BOT_PREFIX",
     "OLLAMA_VISION_MODEL",
@@ -31,6 +34,8 @@ class EditableSettings:
     teams_chat_id: str
     teams_team_id: str
     teams_channel_id: str
+    teams_channels: str
+    teams_chat_ids: str
     trigger_mode: str
     bot_prefix: str
     ollama_vision_model: str
@@ -44,6 +49,8 @@ class EditableSettings:
             teams_chat_id=settings.teams_chat_id,
             teams_team_id=settings.teams_team_id,
             teams_channel_id=settings.teams_channel_id,
+            teams_channels=settings.teams_channels,
+            teams_chat_ids=settings.teams_chat_ids,
             trigger_mode=settings.trigger_mode.value,
             bot_prefix=settings.bot_prefix,
             ollama_vision_model=settings.ollama_vision_model,
@@ -57,6 +64,8 @@ class EditableSettings:
             "TEAMS_CHAT_ID": self.teams_chat_id,
             "TEAMS_TEAM_ID": self.teams_team_id,
             "TEAMS_CHANNEL_ID": self.teams_channel_id,
+            "TEAMS_CHANNELS": self.teams_channels,
+            "TEAMS_CHAT_IDS": self.teams_chat_ids,
             "TRIGGER_MODE": self.trigger_mode,
             "BOT_PREFIX": self.bot_prefix,
             "OLLAMA_VISION_MODEL": self.ollama_vision_model,
@@ -72,6 +81,8 @@ def build_settings_from_form(
     teams_chat_id: str,
     teams_team_id: str,
     teams_channel_id: str,
+    teams_channels: str,
+    teams_chat_ids: str,
     trigger_mode: str,
     bot_prefix: str,
     ollama_vision_model: str,
@@ -84,6 +95,16 @@ def build_settings_from_form(
     if normalized_trigger_mode == TriggerMode.PREFIX and not prefix:
         raise ValueError("BOT_PREFIX darf im Prefix-Modus nicht leer sein.")
 
+    # Frühe Validierung der Multi-Target-Syntax
+    resolve_teams_targets(
+        teams_channels=teams_channels,
+        teams_chat_ids=teams_chat_ids,
+        teams_target_mode=normalized_target_mode,
+        teams_team_id=teams_team_id,
+        teams_channel_id=teams_channel_id,
+        teams_chat_id=teams_chat_id,
+    )
+
     return EditableSettings(
         azure_tenant_id=azure_tenant_id.strip(),
         azure_client_id=azure_client_id.strip(),
@@ -91,6 +112,8 @@ def build_settings_from_form(
         teams_chat_id=teams_chat_id.strip(),
         teams_team_id=teams_team_id.strip(),
         teams_channel_id=teams_channel_id.strip(),
+        teams_channels=teams_channels.strip(),
+        teams_chat_ids=teams_chat_ids.strip(),
         trigger_mode=normalized_trigger_mode.value,
         bot_prefix=prefix,
         ollama_vision_model=ollama_vision_model.strip(),

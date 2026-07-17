@@ -54,6 +54,8 @@ def test_build_settings_from_form_uses_existing_prefix_as_fallback() -> None:
         teams_chat_id="",
         teams_team_id="team",
         teams_channel_id="channel",
+        teams_channels="",
+        teams_chat_ids="",
         trigger_mode="prefix",
         bot_prefix="   ",
         ollama_vision_model="",
@@ -78,6 +80,8 @@ def test_build_settings_from_form_normalizes_values() -> None:
         teams_chat_id=" 19:test@thread.v2 ",
         teams_team_id="",
         teams_channel_id="",
+        teams_channels=" team-a|channel-1 ",
+        teams_chat_ids=" 19:a@thread.v2,19:b@thread.v2 ",
         trigger_mode="PREFIX",
         bot_prefix=" /ki ",
         ollama_vision_model=" qwen2.5vl:7b ",
@@ -90,6 +94,8 @@ def test_build_settings_from_form_normalizes_values() -> None:
         teams_chat_id="19:test@thread.v2",
         teams_team_id="",
         teams_channel_id="",
+        teams_channels="team-a|channel-1",
+        teams_chat_ids="19:a@thread.v2,19:b@thread.v2",
         trigger_mode="prefix",
         bot_prefix="/ki",
         ollama_vision_model="qwen2.5vl:7b",
@@ -113,6 +119,8 @@ def test_render_config_page_contains_requested_fields() -> None:
     assert "TEAMS_CHAT_ID" in html
     assert "TEAMS_TEAM_ID" in html
     assert "TEAMS_CHANNEL_ID" in html
+    assert "TEAMS_CHANNELS" in html
+    assert "TEAMS_CHAT_IDS" in html
     assert "TRIGGER_MODE" in html
     assert "BOT_PREFIX" in html
     assert "OLLAMA_VISION_MODEL" in html

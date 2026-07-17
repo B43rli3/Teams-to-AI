@@ -28,6 +28,7 @@ class StatusResponse(BaseModel):
     configured_team_id: str | None
     configured_channel_id: str | None
     configured_chat_id: str | None = None
+    configured_targets: list[str] = Field(default_factory=list)
     ollama_model: str
     queued_messages: int
     failed_messages: int

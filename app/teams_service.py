@@ -10,6 +10,7 @@ from app.graph_client import GraphClient
 from app.logging_config import get_logger, truncate_id
 from app.message_parser import MessageParser, check_mention_trigger
 from app.teams_attachments import build_reference_attachment
+from app.teams_targets import TeamsTarget
 
 logger = get_logger(__name__)
 
@@ -30,6 +31,8 @@ class TeamsMessage:
     is_deleted: bool
     reply_to_id: str | None = None
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    target_key: str = ""
+    target: TeamsTarget | None = None
 
     @property
     def root_message_id(self) -> str:
@@ -55,28 +58,40 @@ class TeamsService:
     def authenticated_user_id(self) -> str:
         return self._authenticated_user_id
 
-    async def fetch_channel_messages(self) -> list[TeamsMessage]:
-        """Ruft und parst Nachrichten aus Kanal oder Chat ab."""
-        if self._settings.teams_target_mode == TeamsTargetMode.CHAT:
+    def get_targets(self) -> list[TeamsTarget]:
+        """Gibt alle konfigurierten Überwachungsziele zurück."""
+        return list(self._settings.resolved_targets)
+
+    async def fetch_messages_for_target(self, target: TeamsTarget) -> list[TeamsMessage]:
+        """Ruft und parst Nachrichten für ein einzelnes Ziel ab."""
+        if target.kind == TeamsTargetMode.CHAT:
             raw_messages = await self._graph.get_chat_messages(
-                self._settings.teams_chat_id,
+                target.chat_id,
                 top=self._settings.poll_page_size,
             )
         else:
             raw_messages = await self._graph.get_channel_messages(
-                self._settings.teams_team_id,
-                self._settings.teams_channel_id,
+                target.team_id,
+                target.channel_id,
                 top=self._settings.poll_page_size,
             )
 
         messages: list[TeamsMessage] = []
         for raw in raw_messages:
-            parsed = self._parse_raw_message(raw)
+            parsed = self._parse_raw_message(raw, target=target)
             if parsed is not None:
                 messages.append(parsed)
 
         messages.sort(key=lambda m: m.created_at)
         return messages
+
+    async def fetch_channel_messages(self) -> list[TeamsMessage]:
+        """Ruft Nachrichten aller Ziele ab (Abwärtskompatibilität)."""
+        all_messages: list[TeamsMessage] = []
+        for target in self.get_targets():
+            all_messages.extend(await self.fetch_messages_for_target(target))
+        all_messages.sort(key=lambda m: m.created_at)
+        return all_messages
 
     def should_process_message(
         self,
@@ -129,7 +144,6 @@ class TeamsService:
         if self._settings.trigger_mode == TriggerMode.PREFIX:
             cleaned = self._parser.remove_prefix(cleaned, self._settings.bot_prefix)
 
-        # Leerer Text nach Prefix-Entfernung ist OK, wenn Anhänge folgen
         return cleaned.strip()
 
     async def send_thread_reply(
@@ -138,19 +152,21 @@ class TeamsService:
         html_content: str,
         *,
         attachments: list[dict[str, Any]] | None = None,
+        target: TeamsTarget | None = None,
     ) -> str:
-        """Sendet eine Thread-Antwort und gibt die Reply-ID zurück."""
-        if self._settings.teams_target_mode == TeamsTargetMode.CHAT:
+        """Sendet eine Antwort und gibt die Reply-ID zurück."""
+        resolved = target or self._default_target()
+        if resolved.kind == TeamsTargetMode.CHAT:
             result = await self._graph.send_chat_reply(
-                self._settings.teams_chat_id,
+                resolved.chat_id,
                 root_message_id,
                 html_content,
                 attachments=attachments,
             )
         else:
             result = await self._graph.send_channel_reply(
-                self._settings.teams_team_id,
-                self._settings.teams_channel_id,
+                resolved.team_id,
+                resolved.channel_id,
                 root_message_id,
                 html_content,
                 attachments=attachments,
@@ -160,7 +176,7 @@ class TeamsService:
             "thread_reply_sent",
             root_message_id=truncate_id(root_message_id),
             reply_id=truncate_id(reply_id),
-            target_mode=self._settings.teams_target_mode.value,
+            target_key=truncate_id(resolved.key, 40),
             attachments=len(attachments or []),
         )
         return reply_id
@@ -170,6 +186,7 @@ class TeamsService:
         *,
         filename: str,
         pdf_bytes: bytes,
+        target: TeamsTarget | None = None,
     ) -> dict[str, str]:
         """Lädt eine PDF in den Teams-Dateiordner hoch und liefert ein Attachment."""
         if len(pdf_bytes) > self._settings.attachment_max_bytes:
@@ -178,16 +195,23 @@ class TeamsService:
                 f"Limit {self._settings.attachment_max_bytes})."
             )
 
+        resolved = target or self._default_target()
         drive_item = await self._graph.upload_file_to_files_folder(
             filename=filename,
             content=pdf_bytes,
             content_type="application/pdf",
-            team_id=self._settings.teams_team_id or None,
-            channel_id=self._settings.teams_channel_id or None,
-            chat_id=self._settings.teams_chat_id or None,
-            target_mode=self._settings.teams_target_mode,
+            team_id=resolved.team_id or None,
+            channel_id=resolved.channel_id or None,
+            chat_id=resolved.chat_id or None,
+            target_mode=resolved.kind,
         )
         return build_reference_attachment(drive_item)
+
+    def _default_target(self) -> TeamsTarget:
+        targets = self.get_targets()
+        if not targets:
+            raise ValueError("Kein Teams-Ziel konfiguriert.")
+        return targets[0]
 
     def _check_trigger(self, message: TeamsMessage, cleaned_text: str) -> bool:
         """Prüft den konfigurierten Trigger-Modus."""
@@ -197,10 +221,8 @@ class TeamsService:
             return True
 
         if mode == TriggerMode.PREFIX:
-            # Bei Anhang-only ohne Text: Body kann nur Attachment-Marker sein
             if cleaned_text.startswith(self._settings.bot_prefix):
                 return True
-            # Roh-HTML/Text vor Bereinigung prüfen
             raw = self._parser.parse_teams_message(
                 message.body_content,
                 has_attachments=False,
@@ -208,11 +230,9 @@ class TeamsService:
             )
             if raw and raw.startswith(self._settings.bot_prefix):
                 return True
-            # Auch unbereinigten Body prüfen (Prefix am Anfang)
             plain = (message.body_content or "").strip()
             if plain.startswith(self._settings.bot_prefix):
                 return True
-            # HTML kann Prefix im Text enthalten
             from bs4 import BeautifulSoup
 
             soup_text = BeautifulSoup(message.body_content or "", "html.parser").get_text()
@@ -224,7 +244,12 @@ class TeamsService:
 
         return False
 
-    def _parse_raw_message(self, raw: dict[str, Any]) -> TeamsMessage | None:
+    def _parse_raw_message(
+        self,
+        raw: dict[str, Any],
+        *,
+        target: TeamsTarget | None = None,
+    ) -> TeamsMessage | None:
         """Parst eine rohe Graph-Nachricht."""
         message_id = raw.get("id")
         if not message_id:
@@ -240,7 +265,6 @@ class TeamsService:
         deleted = raw.get("deletedDateTime") is not None
         attachment_list = list(attachments) if isinstance(attachments, list) else []
 
-        # Inline-Bilder im HTML zählen als Anhänge
         body_content = str(body.get("content", ""))
         has_inline_media = "hostedContents/" in body_content or "<img" in body_content.lower()
 
@@ -257,4 +281,6 @@ class TeamsService:
             is_deleted=deleted,
             reply_to_id=raw.get("replyToId"),
             attachments=attachment_list,
+            target_key=target.key if target else "",
+            target=target,
         )

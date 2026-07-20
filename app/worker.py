@@ -12,8 +12,8 @@ from app.exceptions import (
     GraphAPIError,
     GraphPermissionError,
     OllamaContextTooLargeError,
-    OllamaImageLoadError,
     OllamaError,
+    OllamaImageLoadError,
 )
 from app.language_guard import looks_predominantly_english
 from app.llm_client import OllamaClient

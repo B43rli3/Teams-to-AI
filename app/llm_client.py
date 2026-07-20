@@ -97,7 +97,10 @@ class OllamaClient:
         if system_prompt:
             chat_messages.append({"role": "system", "content": system_prompt})
 
-        chat_messages.extend(messages)
+        # Important: OllamaClient mutates message dicts by attaching `images`.
+        # Deshalb müssen wir eine Kopie erstellen, damit Retry/Mehrfachaufrufe
+        # keine alten `images`-Felder mitschleppen.
+        chat_messages.extend([dict(m) for m in messages])
 
         # Bilder an die letzte User-Nachricht hängen (Ollama Multimodal-Format)
         if images:
@@ -113,6 +116,11 @@ class OllamaClient:
                         "images": images,
                     }
                 )
+        else:
+            # Safety: falls in den Input-Nachrichten bereits ein `images`-Feld
+            # existiert (z. B. nach einem vorherigen Ollama-Aufruf), entfernen.
+            for msg in chat_messages:
+                msg.pop("images", None)
 
         model = self._model
         if images and self._vision_model:
@@ -215,7 +223,8 @@ class OllamaClient:
                 or "failed to load audio" in lower
             ):
                 raise OllamaImageLoadError(
-                    f"Ollama konnte das Bild nicht laden (HTTP {response.status_code}): {body[:200]}",
+                    f"Ollama konnte das Bild nicht laden (HTTP {response.status_code}): "
+                    f"{body[:200]}",
                     status_code=response.status_code,
                 )
             raise OllamaError(

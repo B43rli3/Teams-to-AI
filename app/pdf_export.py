@@ -68,7 +68,7 @@ def generate_pdf_from_text(
     return str(output).encode("latin-1")
 
 
-def _try_add_first_image(pdf: "Any", images_base64: list[str]) -> None:
+def _try_add_first_image(pdf: object, images_base64: list[str]) -> None:
     """Versucht das erste Bild (base64) als Embedded image hinzuzufügen."""
     import base64
     import os

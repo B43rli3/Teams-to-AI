@@ -262,9 +262,11 @@ class GraphClient:
                 except GraphAPIError as exc:
                     last_error = exc
             else:
+                if last_error:
+                    raise last_error
                 raise GraphAPIError(
                     "Dateiordner des Chats konnte nicht aufgelöst werden.",
-                ) from last_error
+                )
         else:
             if not team_id or not channel_id:
                 raise GraphAPIError("Team- und Channel-ID fehlen für Datei-Upload.")

@@ -226,9 +226,11 @@ class TeamsService:
                 target_mode=resolved.kind,
             )
         except GraphAPIError as exc:
-            msg = str(exc).lower()
-            if "filesfolder" not in msg and "segment 'filesfolder'" not in msg:
-                raise
+            # Im Gruppenchat ist filesFolder oft nicht verfügbar → OneDrive-Fallback.
+            if resolved.kind != TeamsTargetMode.CHAT:
+                msg = str(exc).lower()
+                if "filesfolder" not in msg and "segment 'filesfolder'" not in msg:
+                    raise
 
             logger.warning(
                 "files_folder_upload_failed_fallback_to_chat_files",

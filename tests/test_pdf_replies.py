@@ -17,6 +17,10 @@ def test_wants_pdf_attachment_detects_german_request() -> None:
     assert wants_pdf_attachment("Bitte als PDF senden")
     assert wants_pdf_attachment("/ai Erstelle mir ein PDF mit einer Zusammenfassung")
     assert wants_pdf_attachment("Schick mir das als PDF")
+    assert wants_pdf_attachment(
+        "Erstelle mir einen Steckbrief und gebe ihn mir als eine PDF zurück"
+    )
+    assert wants_pdf_attachment("Gib mir den Steckbrief als PDF-Datei zurück")
     assert not wants_pdf_attachment("Was steht in der Datei?")
     assert not wants_pdf_attachment("Was ist das für ein Dokument?")
     assert not wants_pdf_attachment("Fasse mir folgende PDF zusammen?")

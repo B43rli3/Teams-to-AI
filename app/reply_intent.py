@@ -9,7 +9,8 @@ import re
 _PDF_REQUEST_RE = re.compile(
     r"(?i)"
     r"(?:"
-    r"\bals\s+pdf\b|"
+    r"\bals\s+(?:eine?\s+)?pdf\b|"
+    r"\bals\s+pdf[\s-]?datei\b|"
     r"\bpdf[\s-]?erstell\w*|"
     r"\bpdf[\s-]?export\w*|"
     r"\bpdf[\s-]?generier\w*|"

@@ -26,10 +26,10 @@ def build_reference_attachment(
 ) -> dict[str, str]:
     """Erzeugt ein Teams-Reference-Attachment aus einem driveItem."""
     attachment_id = extract_guid_from_etag(str(drive_item.get("eTag", ""))) or str(uuid.uuid4())
-    # Teams erwartet eine SharePoint-/OneDrive-URL (webUrl/webDavUrl), keine downloadUrl.
+    # Teams erwartet webDavUrl (Graph-Doku Example 4) oder webUrl / Share-Link.
     resolved_url = content_url or str(
-        drive_item.get("webUrl")
-        or drive_item.get("webDavUrl")
+        drive_item.get("webDavUrl")
+        or drive_item.get("webUrl")
         or ""
     )
     if not resolved_url:

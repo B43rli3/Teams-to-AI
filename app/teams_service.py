@@ -40,6 +40,14 @@ class TeamsMessage:
         return self.reply_to_id or self.id
 
 
+@dataclass
+class PdfUploadResult:
+    """Ergebnis eines PDF-Uploads inkl. optionaler Öffnen-URL."""
+
+    attachment: dict[str, str]
+    open_url: str = ""
+
+
 class TeamsService:
     """Service für Teams-Nachrichtenfilterung und -verarbeitung."""
 
@@ -188,8 +196,8 @@ class TeamsService:
         filename: str,
         pdf_bytes: bytes,
         target: TeamsTarget | None = None,
-    ) -> dict[str, str]:
-        """Lädt eine PDF in den Teams-Dateiordner hoch und liefert ein Attachment."""
+    ) -> PdfUploadResult:
+        """Lädt eine PDF hoch, gibt Zugriff frei und liefert ein Attachment."""
         if len(pdf_bytes) > self._settings.attachment_max_bytes:
             raise ValueError(
                 f"PDF zu groß ({len(pdf_bytes)} Bytes, "
@@ -198,7 +206,7 @@ class TeamsService:
 
         resolved = target or self._default_target()
         drive_item: dict[str, Any]
-        share_via_org_link = False
+        personal_upload = False
 
         try:
             drive_item = await self._graph.upload_file_to_files_folder(
@@ -225,14 +233,23 @@ class TeamsService:
                 content=pdf_bytes,
                 content_type="application/pdf",
             )
-            share_via_org_link = True
+            personal_upload = True
 
-        content_url: str | None = None
         web_url = str(drive_item.get("webUrl") or "")
-        needs_org_link = share_via_org_link or "/personal/" in web_url.lower()
-        if needs_org_link:
+        needs_sharing = personal_upload or "/personal/" in web_url.lower()
+        share_url: str | None = None
+
+        if needs_sharing:
+            if resolved.kind == TeamsTargetMode.CHAT and resolved.chat_id:
+                await self._grant_chat_members_access(drive_item, resolved.chat_id)
+
             try:
-                content_url = await self._graph.create_organization_view_link(drive_item)
+                share_url = await self._graph.create_organization_view_link(drive_item)
+                if share_url:
+                    logger.info(
+                        "pdf_org_share_link_created",
+                        target_key=resolved.key,
+                    )
             except GraphAPIError as exc:
                 logger.warning(
                     "drive_item_org_link_failed",
@@ -240,7 +257,62 @@ class TeamsService:
                     target_key=resolved.key,
                 )
 
-        return build_reference_attachment(drive_item, content_url=content_url)
+        attachment = build_reference_attachment(drive_item, content_url=share_url)
+        open_url = share_url or str(
+            drive_item.get("webUrl") or drive_item.get("webDavUrl") or ""
+        )
+        return PdfUploadResult(attachment=attachment, open_url=open_url)
+
+    async def _grant_chat_members_access(
+        self,
+        drive_item: dict[str, Any],
+        chat_id: str,
+    ) -> None:
+        """Gibt Chat-Mitgliedern direkten Lesezugriff auf die Datei."""
+        try:
+            members = await self._graph.get_chat_members(chat_id)
+        except GraphAPIError as exc:
+            logger.warning(
+                "chat_members_fetch_failed",
+                error=str(exc)[:200],
+                chat_id=truncate_id(chat_id, 40),
+            )
+            return
+
+        user_ids: list[str] = []
+        for member in members:
+            user_id = str(
+                member.get("userId")
+                or (member.get("user") or {}).get("id")
+                or ""
+            )
+            if not user_id or user_id == self._authenticated_user_id:
+                continue
+            user_ids.append(user_id)
+
+        if not user_ids:
+            logger.warning(
+                "chat_members_empty_for_share",
+                chat_id=truncate_id(chat_id, 40),
+            )
+            return
+
+        try:
+            granted = await self._graph.invite_users_to_drive_item(
+                drive_item,
+                user_object_ids=user_ids,
+            )
+            logger.info(
+                "pdf_chat_members_granted",
+                chat_id=truncate_id(chat_id, 40),
+                recipients=granted,
+            )
+        except GraphAPIError as exc:
+            logger.warning(
+                "pdf_chat_members_invite_failed",
+                error=str(exc)[:200],
+                chat_id=truncate_id(chat_id, 40),
+            )
 
     def _default_target(self) -> TeamsTarget:
         targets = self.get_targets()

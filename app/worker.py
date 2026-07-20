@@ -487,24 +487,32 @@ class PollingWorker:
                             images_base64=images_for_pdf,
                         )
                         pdf_name = default_pdf_filename(message_id=message_id)
-                        attachment = await self._teams.upload_pdf_reply(
+                        upload = await self._teams.upload_pdf_reply(
                             filename=pdf_name,
                             pdf_bytes=pdf_bytes,
                             target=effective_target,
                         )
+                        attachment = upload.attachment
                         attachments = [attachment]
                         html_response = append_attachment_markup(
                             html_response,
                             attachment["id"],
                         )
+                        open_link = ""
+                        if upload.open_url:
+                            open_link = (
+                                f' <a href="{upload.open_url}">PDF öffnen</a>'
+                            )
                         html_response = (
-                            f"{html_response}<p><em>PDF-Anhang: {attachment['name']}</em></p>"
+                            f"{html_response}<p><em>PDF-Anhang: "
+                            f"{attachment['name']}</em>{open_link}</p>"
                         )
                         logger.info(
                             "pdf_reply_prepared",
                             message_id=truncate_id(message_id),
                             filename=attachment["name"],
                             bytes=len(pdf_bytes),
+                            has_open_url=bool(upload.open_url),
                         )
                     except Exception as exc:
                         logger.warning(

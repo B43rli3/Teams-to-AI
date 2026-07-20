@@ -48,7 +48,7 @@ def test_looks_predominantly_english() -> None:
     )
 
 
-def test_build_reference_attachment_prefers_web_url() -> None:
+def test_build_reference_attachment_prefers_webdav_url() -> None:
     attachment = build_reference_attachment(
         {
             "eTag": '"668f7fa8-8129-4de7-b32b-fe1b442e6ef1",1"',
@@ -58,7 +58,7 @@ def test_build_reference_attachment_prefers_web_url() -> None:
             "name": "file.pdf",
         }
     )
-    assert attachment["contentUrl"] == "https://contoso.sharepoint.com/sites/x/file.pdf"
+    assert attachment["contentUrl"] == "https://contoso.sharepoint.com/dav/file.pdf"
 
 
 def test_build_reference_attachment_uses_explicit_content_url() -> None:

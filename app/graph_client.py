@@ -116,6 +116,11 @@ class GraphClient:
         """Ruft Metadaten eines Chats ab."""
         return await self._request("GET", f"/chats/{chat_id}")
 
+    async def get_chat_members(self, chat_id: str) -> list[dict[str, Any]]:
+        """Listet Mitglieder eines Chats auf."""
+        data = await self._request("GET", f"/chats/{chat_id}/members")
+        return list(data.get("value", []))
+
     async def get_channel_messages(
         self,
         team_id: str,
@@ -323,6 +328,40 @@ class GraphClient:
         link = result.get("link", {}) or {}
         web_url = str(link.get("webUrl") or "").strip()
         return web_url or None
+
+    async def invite_users_to_drive_item(
+        self,
+        drive_item: dict[str, Any],
+        *,
+        user_object_ids: list[str],
+        roles: list[str] | None = None,
+    ) -> int:
+        """Gewährt Chat-/Team-Mitgliedern direkten Lesezugriff auf ein driveItem."""
+        recipients = [
+            {"objectId": uid}
+            for uid in dict.fromkeys(uid.strip() for uid in user_object_ids if uid and uid.strip())
+        ]
+        if not recipients:
+            return 0
+
+        item_id = str(drive_item.get("id") or "")
+        parent = drive_item.get("parentReference", {}) or {}
+        drive_id = str(parent.get("driveId") or "")
+        if not item_id or not drive_id:
+            raise GraphAPIError("driveItem ohne id/driveId – Freigabe nicht möglich.")
+
+        await self._request(
+            "POST",
+            f"/drives/{drive_id}/items/{item_id}/invite",
+            json={
+                "recipients": recipients,
+                "message": "",
+                "requireSignIn": True,
+                "sendInvitation": False,
+                "roles": roles or ["read"],
+            },
+        )
+        return len(recipients)
 
     async def _finalize_uploaded_drive_item(self, drive_item: dict[str, Any]) -> dict[str, Any]:
         """Lädt fehlende Metadaten (eTag, webUrl) nach dem Upload nach."""

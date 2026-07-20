@@ -225,6 +225,51 @@ async def test_upload_file_to_teams_chat_files_folder(graph_client: GraphClient)
         await graph_client.close()
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_invite_users_to_drive_item(graph_client: GraphClient) -> None:
+    route = respx.post(f"{GRAPH_BASE_URL}/drives/drive-me/items/item-2/invite").mock(
+        return_value=httpx.Response(200, json={"value": []})
+    )
+
+    await graph_client.start()
+    try:
+        count = await graph_client.invite_users_to_drive_item(
+            {
+                "id": "item-2",
+                "parentReference": {"driveId": "drive-me"},
+            },
+            user_object_ids=["user-a", "user-b", "user-a"],
+        )
+        assert count == 2
+        assert route.called
+        body = route.calls.last.request.content.decode("utf-8")
+        assert "user-a" in body
+        assert "user-b" in body
+        assert '"sendInvitation": false' in body.replace("False", "false") or (
+            '"sendInvitation":false' in body.replace(" ", "")
+        )
+    finally:
+        await graph_client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_chat_members(graph_client: GraphClient) -> None:
+    respx.get(f"{GRAPH_BASE_URL}/chats/chat-1/members").mock(
+        return_value=httpx.Response(
+            200,
+            json={"value": [{"userId": "u1", "displayName": "Alice"}]},
+        )
+    )
+    await graph_client.start()
+    try:
+        members = await graph_client.get_chat_members("chat-1")
+        assert members[0]["userId"] == "u1"
+    finally:
+        await graph_client.close()
+
+
 def test_encode_sharing_url_matches_graph_spec() -> None:
     url = "https://contoso.sharepoint.com/sites/Docs/Shared Documents/file.pdf"
     token = encode_sharing_url(url)

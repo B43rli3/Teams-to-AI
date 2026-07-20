@@ -19,6 +19,13 @@ logger = get_logger(__name__)
 
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
+_DRIVE_ITEM_ATTACHMENT_SELECT = "id,name,eTag,webUrl,webDavUrl,file,parentReference"
+
+TEAMS_CHAT_FILES_FOLDER_CANDIDATES = (
+    "Microsoft Teams Chat Files",
+    "Microsoft Teams-Chatdateien",
+)
+
 _SHARE_HOST_MARKERS = (
     "sharepoint.com",
     "sharepoint.de",
@@ -240,14 +247,45 @@ class GraphClient:
 
         encoded_name = quote(filename, safe="")
         path = f"/drives/{drive_id}/items/{folder_id}:/{encoded_name}:/content"
-        return await self._upload_bytes(
+        drive_item = await self._upload_bytes(
             path,
             content,
             content_type=content_type,
-            params={
-                "$select": "id,name,eTag,webUrl,@microsoft.graph.downloadUrl,file"
-            },
+            params={"$select": "id,name,webUrl,webDavUrl,file,parentReference"},
         )
+        return await self._finalize_uploaded_drive_item(drive_item)
+
+    async def upload_file_to_teams_chat_files_folder(
+        self,
+        *,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> dict[str, Any]:
+        """Lädt eine Datei in den OneDrive-Ordner für Teams-Chats hoch."""
+        from urllib.parse import quote
+
+        encoded_name = quote(filename, safe="")
+        last_error: Exception | None = None
+
+        for folder_name in TEAMS_CHAT_FILES_FOLDER_CANDIDATES:
+            encoded_folder = quote(folder_name, safe="")
+            path = f"/me/drive/root:/{encoded_folder}/{encoded_name}:/content"
+            try:
+                drive_item = await self._upload_bytes(
+                    path,
+                    content,
+                    content_type=content_type,
+                    params={"$select": "id,name,webUrl,webDavUrl,file,parentReference"},
+                )
+                return await self._finalize_uploaded_drive_item(drive_item)
+            except GraphAPIError as exc:
+                last_error = exc
+                continue
+
+        raise GraphAPIError(
+            "Upload in den Teams-Chat-Dateiordner fehlgeschlagen.",
+        ) from last_error
 
     async def upload_file_to_me_drive_root(
         self,
@@ -261,12 +299,64 @@ class GraphClient:
 
         encoded_name = quote(filename, safe="")
         path = f"/me/drive/root:/{encoded_name}:/content"
-        return await self._upload_bytes(
+        drive_item = await self._upload_bytes(
             path,
             content,
             content_type=content_type,
-            params={"$select": "id,name,eTag,webUrl,@microsoft.graph.downloadUrl,file"},
+            params={"$select": "id,name,webUrl,webDavUrl,file,parentReference"},
         )
+        return await self._finalize_uploaded_drive_item(drive_item)
+
+    async def create_organization_view_link(self, drive_item: dict[str, Any]) -> str | None:
+        """Erstellt einen organisationsweiten Lese-Link für ein driveItem."""
+        item_id = str(drive_item.get("id") or "")
+        parent = drive_item.get("parentReference", {}) or {}
+        drive_id = str(parent.get("driveId") or "")
+        if not item_id or not drive_id:
+            return None
+
+        result = await self._request(
+            "POST",
+            f"/drives/{drive_id}/items/{item_id}/createLink",
+            json={"type": "view", "scope": "organization"},
+        )
+        link = result.get("link", {}) or {}
+        web_url = str(link.get("webUrl") or "").strip()
+        return web_url or None
+
+    async def _finalize_uploaded_drive_item(self, drive_item: dict[str, Any]) -> dict[str, Any]:
+        """Lädt fehlende Metadaten (eTag, webUrl) nach dem Upload nach."""
+        if not drive_item:
+            return drive_item
+
+        has_urls = bool(drive_item.get("webUrl") or drive_item.get("webDavUrl"))
+        has_etag = bool(drive_item.get("eTag"))
+        if has_urls and has_etag:
+            return drive_item
+
+        item_id = str(drive_item.get("id") or "")
+        if not item_id:
+            return drive_item
+
+        parent = drive_item.get("parentReference", {}) or {}
+        drive_id = str(parent.get("driveId") or "")
+        if drive_id:
+            path = f"/drives/{drive_id}/items/{item_id}"
+        else:
+            path = f"/me/drive/items/{item_id}"
+
+        try:
+            return await self._request(
+                "GET",
+                path,
+                params={"$select": _DRIVE_ITEM_ATTACHMENT_SELECT},
+            )
+        except GraphAPIError:
+            logger.warning(
+                "drive_item_finalize_failed",
+                item_id=item_id[:12],
+            )
+            return drive_item
 
     async def send_reply(
         self,

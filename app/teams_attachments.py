@@ -19,23 +19,26 @@ def extract_guid_from_etag(etag: str) -> str | None:
     return match.group(0) if match else None
 
 
-def build_reference_attachment(drive_item: dict[str, Any]) -> dict[str, str]:
+def build_reference_attachment(
+    drive_item: dict[str, Any],
+    *,
+    content_url: str | None = None,
+) -> dict[str, str]:
     """Erzeugt ein Teams-Reference-Attachment aus einem driveItem."""
     attachment_id = extract_guid_from_etag(str(drive_item.get("eTag", ""))) or str(uuid.uuid4())
-    # Für das spätere Downloaden in Teams ist eine preauth-download URL oft robuster.
-    content_url = str(
-        drive_item.get("@microsoft.graph.downloadUrl")
-        or drive_item.get("webUrl")
+    # Teams erwartet eine SharePoint-/OneDrive-URL (webUrl/webDavUrl), keine downloadUrl.
+    resolved_url = content_url or str(
+        drive_item.get("webUrl")
         or drive_item.get("webDavUrl")
         or ""
     )
-    if not content_url:
-        raise ValueError("driveItem enthält keine verwertbare Download-URL.")
+    if not resolved_url:
+        raise ValueError("driveItem enthält keine verwertbare SharePoint-URL.")
 
     return {
         "id": attachment_id,
         "contentType": "reference",
-        "contentUrl": content_url,
+        "contentUrl": resolved_url,
         "name": str(drive_item.get("name") or "anhang.pdf"),
     }
 

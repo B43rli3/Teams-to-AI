@@ -48,7 +48,7 @@ def test_looks_predominantly_english() -> None:
     )
 
 
-def test_build_reference_attachment_prefers_download_url() -> None:
+def test_build_reference_attachment_prefers_web_url() -> None:
     attachment = build_reference_attachment(
         {
             "eTag": '"668f7fa8-8129-4de7-b32b-fe1b442e6ef1",1"',
@@ -58,7 +58,19 @@ def test_build_reference_attachment_prefers_download_url() -> None:
             "name": "file.pdf",
         }
     )
-    assert "contoso.sharepoint.com/dl/file.pdf" in attachment["contentUrl"]
+    assert attachment["contentUrl"] == "https://contoso.sharepoint.com/sites/x/file.pdf"
+
+
+def test_build_reference_attachment_uses_explicit_content_url() -> None:
+    attachment = build_reference_attachment(
+        {
+            "eTag": '"668f7fa8-8129-4de7-b32b-fe1b442e6ef1",1"',
+            "webUrl": "https://contoso.sharepoint.com/sites/x/file.pdf",
+            "name": "file.pdf",
+        },
+        content_url="https://contoso.sharepoint.com/:b:/g/personal/user/file.pdf",
+    )
+    assert attachment["contentUrl"].startswith("https://contoso.sharepoint.com/:b:/g/")
 
 
 def test_build_reference_attachment_from_drive_item() -> None:

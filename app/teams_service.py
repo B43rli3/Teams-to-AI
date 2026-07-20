@@ -197,6 +197,9 @@ class TeamsService:
             )
 
         resolved = target or self._default_target()
+        drive_item: dict[str, Any]
+        share_via_org_link = False
+
         try:
             drive_item = await self._graph.upload_file_to_files_folder(
                 filename=filename,
@@ -207,25 +210,37 @@ class TeamsService:
                 chat_id=resolved.chat_id or None,
                 target_mode=resolved.kind,
             )
-            return build_reference_attachment(drive_item)
         except GraphAPIError as exc:
-            # Manche Kanäle/Setups unterstützen den filesFolder-Endpunkt nicht.
-            # Fallback: Upload in die OneDrive-Root des angemeldeten Benutzers.
             msg = str(exc).lower()
             if "filesfolder" not in msg and "segment 'filesfolder'" not in msg:
                 raise
 
             logger.warning(
-                "files_folder_upload_failed_fallback_to_me_drive",
+                "files_folder_upload_failed_fallback_to_chat_files",
                 error=str(exc)[:200],
                 target_key=resolved.key,
             )
-            drive_item = await self._graph.upload_file_to_me_drive_root(
+            drive_item = await self._graph.upload_file_to_teams_chat_files_folder(
                 filename=filename,
                 content=pdf_bytes,
                 content_type="application/pdf",
             )
-            return build_reference_attachment(drive_item)
+            share_via_org_link = True
+
+        content_url: str | None = None
+        web_url = str(drive_item.get("webUrl") or "")
+        needs_org_link = share_via_org_link or "/personal/" in web_url.lower()
+        if needs_org_link:
+            try:
+                content_url = await self._graph.create_organization_view_link(drive_item)
+            except GraphAPIError as exc:
+                logger.warning(
+                    "drive_item_org_link_failed",
+                    error=str(exc)[:200],
+                    target_key=resolved.key,
+                )
+
+        return build_reference_attachment(drive_item, content_url=content_url)
 
     def _default_target(self) -> TeamsTarget:
         targets = self.get_targets()

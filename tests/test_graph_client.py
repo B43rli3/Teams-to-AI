@@ -155,8 +155,9 @@ async def test_upload_file_to_channel_files_folder(graph_client: GraphClient) ->
                 "id": "item-1",
                 "name": "antwort.pdf",
                 "eTag": '"668f7fa8-8129-4de7-b32b-fe1b442e6ef1",1"',
+                "webUrl": "https://contoso.sharepoint.com/sites/team/antwort.pdf",
                 "webDavUrl": "https://contoso.sharepoint.com/antwort.pdf",
-                "@microsoft.graph.downloadUrl": "https://contoso.sharepoint.com/antwort.pdf?download=1",
+                "parentReference": {"driveId": "drive-1"},
             },
         )
     )
@@ -172,6 +173,54 @@ async def test_upload_file_to_channel_files_folder(graph_client: GraphClient) ->
             target_mode="channel",
         )
         assert item["name"] == "antwort.pdf"
+    finally:
+        await graph_client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_upload_file_to_teams_chat_files_folder(graph_client: GraphClient) -> None:
+    respx.put(
+        f"{GRAPH_BASE_URL}/me/drive/root:/Microsoft%20Teams%20Chat%20Files/antwort.pdf:/content"
+    ).mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "id": "item-2",
+                "name": "antwort.pdf",
+                "webUrl": (
+                    "https://contoso-my.sharepoint.com/personal/user/"
+                    "Documents/Microsoft%20Teams%20Chat%20Files/antwort.pdf"
+                ),
+                "parentReference": {"driveId": "drive-me"},
+            },
+        )
+    )
+    respx.get(f"{GRAPH_BASE_URL}/drives/drive-me/items/item-2").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "item-2",
+                "name": "antwort.pdf",
+                "eTag": '"668f7fa8-8129-4de7-b32b-fe1b442e6ef1",1"',
+                "webUrl": (
+                    "https://contoso-my.sharepoint.com/personal/user/"
+                    "Documents/Microsoft%20Teams%20Chat%20Files/antwort.pdf"
+                ),
+                "parentReference": {"driveId": "drive-me"},
+            },
+        )
+    )
+
+    await graph_client.start()
+    try:
+        item = await graph_client.upload_file_to_teams_chat_files_folder(
+            filename="antwort.pdf",
+            content=b"%PDF-1.4",
+            content_type="application/pdf",
+        )
+        assert item["name"] == "antwort.pdf"
+        assert "Teams%20Chat%20Files" in item["webUrl"]
     finally:
         await graph_client.close()
 

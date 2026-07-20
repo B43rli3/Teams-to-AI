@@ -244,7 +244,28 @@ class GraphClient:
             path,
             content,
             content_type=content_type,
-            params={"$select": "id,name,webUrl,file"},
+            params={
+                "$select": "id,name,eTag,webUrl,@microsoft.graph.downloadUrl,file"
+            },
+        )
+
+    async def upload_file_to_me_drive_root(
+        self,
+        *,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> dict[str, Any]:
+        """Lädt eine Datei in das OneDrive des angemeldeten Benutzers hoch."""
+        from urllib.parse import quote
+
+        encoded_name = quote(filename, safe="")
+        path = f"/me/drive/root:/{encoded_name}:/content"
+        return await self._upload_bytes(
+            path,
+            content,
+            content_type=content_type,
+            params={"$select": "id,name,eTag,webUrl,@microsoft.graph.downloadUrl,file"},
         )
 
     async def send_reply(

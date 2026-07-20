@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.config import Settings, TeamsTargetMode, TriggerMode
+from app.exceptions import GraphAPIError
 from app.graph_client import GraphClient
 from app.logging_config import get_logger, truncate_id
 from app.message_parser import MessageParser, check_mention_trigger
@@ -196,16 +197,35 @@ class TeamsService:
             )
 
         resolved = target or self._default_target()
-        drive_item = await self._graph.upload_file_to_files_folder(
-            filename=filename,
-            content=pdf_bytes,
-            content_type="application/pdf",
-            team_id=resolved.team_id or None,
-            channel_id=resolved.channel_id or None,
-            chat_id=resolved.chat_id or None,
-            target_mode=resolved.kind,
-        )
-        return build_reference_attachment(drive_item)
+        try:
+            drive_item = await self._graph.upload_file_to_files_folder(
+                filename=filename,
+                content=pdf_bytes,
+                content_type="application/pdf",
+                team_id=resolved.team_id or None,
+                channel_id=resolved.channel_id or None,
+                chat_id=resolved.chat_id or None,
+                target_mode=resolved.kind,
+            )
+            return build_reference_attachment(drive_item)
+        except GraphAPIError as exc:
+            # Manche Kanäle/Setups unterstützen den filesFolder-Endpunkt nicht.
+            # Fallback: Upload in die OneDrive-Root des angemeldeten Benutzers.
+            msg = str(exc).lower()
+            if "filesfolder" not in msg and "segment 'filesfolder'" not in msg:
+                raise
+
+            logger.warning(
+                "files_folder_upload_failed_fallback_to_me_drive",
+                error=str(exc)[:200],
+                target_key=resolved.key,
+            )
+            drive_item = await self._graph.upload_file_to_me_drive_root(
+                filename=filename,
+                content=pdf_bytes,
+                content_type="application/pdf",
+            )
+            return build_reference_attachment(drive_item)
 
     def _default_target(self) -> TeamsTarget:
         targets = self.get_targets()

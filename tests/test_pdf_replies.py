@@ -48,17 +48,17 @@ def test_looks_predominantly_english() -> None:
     )
 
 
-def test_build_reference_attachment_prefers_web_url() -> None:
+def test_build_reference_attachment_prefers_download_url() -> None:
     attachment = build_reference_attachment(
         {
             "eTag": '"668f7fa8-8129-4de7-b32b-fe1b442e6ef1",1"',
             "webUrl": "https://contoso.sharepoint.com/sites/x/file.pdf",
             "webDavUrl": "https://contoso.sharepoint.com/dav/file.pdf",
+            "@microsoft.graph.downloadUrl": "https://contoso.sharepoint.com/dl/file.pdf?download=1",
             "name": "file.pdf",
         }
     )
-    assert attachment["contentUrl"].endswith("file.pdf")
-    assert "sharepoint.com/sites" in attachment["contentUrl"]
+    assert "contoso.sharepoint.com/dl/file.pdf" in attachment["contentUrl"]
 
 
 def test_build_reference_attachment_from_drive_item() -> None:

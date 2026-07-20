@@ -156,6 +156,7 @@ async def test_upload_file_to_channel_files_folder(graph_client: GraphClient) ->
                 "name": "antwort.pdf",
                 "eTag": '"668f7fa8-8129-4de7-b32b-fe1b442e6ef1",1"',
                 "webDavUrl": "https://contoso.sharepoint.com/antwort.pdf",
+                "@microsoft.graph.downloadUrl": "https://contoso.sharepoint.com/antwort.pdf?download=1",
             },
         )
     )

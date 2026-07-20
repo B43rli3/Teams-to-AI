@@ -1,4 +1,4 @@
-"""Minimaler MCP-HTTP-Client (JSON-RPC, Streamable HTTP)."""
+"""MCP-HTTP-Client für CPD-AutoPlan (Streamable HTTP, Bearer-Auth)."""
 
 from __future__ import annotations
 
@@ -13,43 +13,99 @@ from app.logging_config import get_logger
 logger = get_logger(__name__)
 
 _MCP_PROTOCOL_VERSION = "2024-11-05"
-_PREFERRED_TOOL_NAMES = (
-    "cpd_query",
-    "query",
-    "ask",
-    "search",
-    "search_models",
-    "search_plans",
-    "get_project_info",
-)
+DEFAULT_CPD_MCP_URL = "http://127.0.0.1:7373/mcp"
+
+
+def mcp_tools_to_ollama(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Konvertiert MCP tools/list in Ollama-Tool-Definitionen."""
+    ollama_tools: list[dict[str, Any]] = []
+    for tool in tools:
+        name = str(tool.get("name") or "").strip()
+        if not name:
+            continue
+        schema = tool.get("inputSchema") or tool.get("input_schema") or {}
+        if not isinstance(schema, dict):
+            schema = {"type": "object", "properties": {}}
+        if "type" not in schema:
+            schema = {"type": "object", "properties": schema.get("properties", {})}
+        ollama_tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": str(tool.get("description") or "").strip(),
+                    "parameters": schema,
+                },
+            }
+        )
+    return ollama_tools
+
+
+def parse_cpd_tool_payload(text: str) -> dict[str, Any] | None:
+    """Parst CPD-Tool-Antworten im Format { ok, reason?, ... }."""
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, dict) and "ok" in parsed:
+        return parsed
+    return None
+
+
+def format_cpd_error_message(payload: dict[str, Any]) -> str:
+    """Liefert eine deutschsprachige Fehlermeldung für CPD-Tool-Antworten."""
+    reason = str(payload.get("reason") or "").strip()
+    lowered = reason.lower()
+
+    if "awaiting in-app authorization" in lowered:
+        return (
+            "CPD-Agent ist noch nicht freigegeben. "
+            "Bitte in CPD-AutoPlan im Agent-Panel auf „Allow agent“ klicken."
+        )
+    if reason == "no project open":
+        return "In CPD-AutoPlan ist kein Projekt geöffnet."
+    if reason == "no drawing/setup open":
+        return "In CPD-AutoPlan ist kein Drawing/Setup geöffnet."
+    if reason:
+        return f"CPD-Fehler: {reason}"
+    return "CPD-Tool meldete einen Fehler."
 
 
 class McpHttpClient:
-    """Kommuniziert mit einem MCP-Server über HTTP (Streamable HTTP / JSON-RPC)."""
+    """Kommuniziert mit CPD-AutoPlan über Streamable HTTP (JSON-RPC, stateless)."""
 
     def __init__(
         self,
         *,
         base_url: str,
+        token: str = "",
         timeout_seconds: float = 60.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._token = token.strip()
         self._timeout = timeout_seconds
         self._client: httpx.AsyncClient | None = None
-        self._session_id: str | None = None
         self._request_id = 0
         self._initialized = False
         self._cached_tools: list[dict[str, Any]] | None = None
 
     async def start(self) -> None:
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=httpx.Timeout(self._timeout))
+            headers: dict[str, str] = {}
+            if self._token:
+                headers["Authorization"] = f"Bearer {self._token}"
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self._timeout, read=max(self._timeout, 120.0)),
+                headers=headers,
+            )
 
     async def close(self) -> None:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
-        self._session_id = None
         self._initialized = False
         self._cached_tools = None
 
@@ -67,97 +123,15 @@ class McpHttpClient:
     async def call_tool(
         self,
         name: str,
-        arguments: dict[str, Any],
+        arguments: dict[str, Any] | None = None,
     ) -> str:
-        """Ruft ein MCP-Tool auf und liefert Textinhalt."""
+        """Ruft ein MCP-Tool auf und liefert den Textinhalt (auch bei CPD isError)."""
         await self._ensure_initialized()
         result = await self._rpc(
             "tools/call",
-            {"name": name, "arguments": arguments},
+            {"name": name, "arguments": arguments or {}},
         )
-        if result.get("isError"):
-            raise McpError(f"MCP-Tool '{name}' meldete einen Fehler: {result}")
-
         return self._extract_text_content(result)
-
-    async def query_with_tool(
-        self,
-        question: str,
-        *,
-        tool_name: str = "",
-        query_argument: str = "query",
-    ) -> tuple[str, str]:
-        """Wählt ein Tool und führt eine Anfrage aus. Gibt (tool, text) zurück."""
-        tools = await self.list_tools()
-        if not tools:
-            raise McpError("MCP-Server lieferte keine Tools.")
-
-        resolved_tool = tool_name.strip() or self._pick_tool(tools)
-        tool_names = {str(tool.get("name") or "") for tool in tools}
-        if resolved_tool not in tool_names:
-            available = ", ".join(sorted(name for name in tool_names if name))
-            raise McpError(
-                f"MCP-Tool '{resolved_tool}' nicht gefunden. Verfügbar: {available}"
-            )
-
-        arguments = self._build_tool_arguments(
-            tools,
-            resolved_tool,
-            question,
-            preferred_key=query_argument,
-        )
-        text = await self.call_tool(resolved_tool, arguments)
-        return resolved_tool, text
-
-    def _pick_tool(self, tools: list[dict[str, Any]]) -> str:
-        names = [str(tool.get("name") or "") for tool in tools if tool.get("name")]
-        lowered = {name.lower(): name for name in names}
-        for preferred in _PREFERRED_TOOL_NAMES:
-            if preferred in lowered:
-                return lowered[preferred]
-        return names[0]
-
-    def _build_tool_arguments(
-        self,
-        tools: list[dict[str, Any]],
-        tool_name: str,
-        question: str,
-        *,
-        preferred_key: str,
-    ) -> dict[str, Any]:
-        schema = self._tool_input_schema(tools, tool_name)
-        properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
-        if not isinstance(properties, dict) or not properties:
-            return {preferred_key: question}
-
-        candidates = [
-            preferred_key,
-            "query",
-            "question",
-            "prompt",
-            "input",
-            "text",
-            "message",
-        ]
-        for key in candidates:
-            if key in properties:
-                return {key: question}
-
-        first_key = next(iter(properties.keys()), preferred_key)
-        return {str(first_key): question}
-
-    @staticmethod
-    def _tool_input_schema(
-        tools: list[dict[str, Any]],
-        tool_name: str,
-    ) -> dict[str, Any]:
-        for tool in tools:
-            if str(tool.get("name") or "") != tool_name:
-                continue
-            schema = tool.get("inputSchema") or tool.get("input_schema") or {}
-            if isinstance(schema, dict):
-                return schema
-        return {}
 
     @staticmethod
     def _extract_text_content(result: dict[str, Any]) -> str:
@@ -219,16 +193,26 @@ class McpHttpClient:
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
-        if self._session_id:
-            headers["Mcp-Session-Id"] = self._session_id
 
-        response = await client.post(self._base_url, json=payload, headers=headers)
-        session_id = response.headers.get("Mcp-Session-Id") or response.headers.get(
-            "mcp-session-id"
-        )
-        if session_id:
-            self._session_id = session_id
+        try:
+            response = await client.post(self._base_url, json=payload, headers=headers)
+        except httpx.ConnectError as exc:
+            raise McpError(
+                "Verbindungsfehler: Ist CPD-AutoPlan gestartet und lauscht auf "
+                f"{self._base_url}? (Agent-MCP muss aktiv sein.)",
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise McpError(
+                f"MCP-Zeitüberschreitung nach {self._timeout}s "
+                f"({method}).",
+            ) from exc
 
+        if response.status_code == 401:
+            raise McpError(
+                "401 Unauthorized: Bearer-Token falsch oder veraltet "
+                "(Token aus dem CPD-Agent-Panel kopieren oder App neu starten).",
+                status_code=401,
+            )
         if response.status_code >= 400:
             raise McpError(
                 f"MCP HTTP {response.status_code}: {response.text[:300]}",

@@ -471,41 +471,56 @@ async def cmd_test_pdf_share(args: argparse.Namespace) -> int:
 
 
 async def cmd_test_cpd_mcp(args: argparse.Namespace) -> int:
-    """Testet die Verbindung zum CPD MCP-Server."""
+    """Testet die Verbindung zum CPD-AutoPlan MCP-Server."""
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    if not settings.cpd_mcp_url.strip():
+    url = settings.cpd_mcp_url.strip()
+    token = settings.cpd_mcp_token.strip()
+    if not url:
         print("Fehler: CPD_MCP_URL ist nicht gesetzt.")
+        return 1
+    if not token:
+        print(
+            "Fehler: CPD_MCP_TOKEN ist nicht gesetzt "
+            "(Token aus dem CPD-Agent-Panel kopieren)."
+        )
         return 1
 
     client = McpHttpClient(
-        base_url=settings.cpd_mcp_url.strip(),
+        base_url=url,
+        token=token,
         timeout_seconds=float(settings.cpd_mcp_timeout_seconds),
     )
     await client.start()
     try:
         tools = await client.list_tools()
-        print(f"CPD MCP erreichbar: {settings.cpd_mcp_url.strip()}")
+        print(f"CPD MCP verbunden: {url}")
         print(f"Tools ({len(tools)}):")
-        for tool in tools:
+        for tool in sorted(tools, key=lambda item: str(item.get("name") or "")):
             name = str(tool.get("name") or "?")
-            description = str(tool.get("description") or "").strip()
+            description = str(tool.get("description") or "").strip().replace("\n", " ")
+            if len(description) > 120:
+                description = description[:117] + "..."
             line = f"  - {name}"
             if description:
-                line += f": {description[:120]}"
+                line += f": {description}"
             print(line)
 
-        question = (args.question or "").strip()
-        if question:
-            tool_name, answer = await client.query_with_tool(
-                question,
-                tool_name=settings.cpd_mcp_tool,
-                query_argument=settings.cpd_mcp_query_argument,
+        if args.call_get_state:
+            result = await client.call_tool("get_state", {})
+            print("\nget_state (Auszug):")
+            print(result[:2000])
+            from app.mcp_client import format_cpd_error_message, parse_cpd_tool_payload
+
+            payload = parse_cpd_tool_payload(result)
+            if payload is not None and payload.get("ok") is False:
+                print("\nHinweis:", format_cpd_error_message(payload))
+        else:
+            print(
+                "\nHinweis: Nur tools/list ausgeführt. "
+                "Für einen read-only Test: --call-get-state"
             )
-            print(f"\nTest-Tool: {tool_name}")
-            print("Antwort (Auszug):")
-            print(answer[:2000])
         return 0
     except Exception as exc:
         print(f"CPD MCP Fehler: {exc}")
@@ -577,11 +592,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     cpd_parser = subparsers.add_parser(
         "test-cpd-mcp",
-        help="CPD MCP-Server testen (Tools auflisten, optional Anfrage senden)",
+        help="CPD-AutoPlan MCP testen (Tools auflisten, optional get_state)",
     )
     cpd_parser.add_argument(
-        "--question",
-        help="Optionale Testfrage an das CPD (z. B. 'Welche Modelle gibt es?')",
+        "--call-get-state",
+        action="store_true",
+        help="Ruft zusätzlich das read-only Tool get_state auf",
     )
 
     reply_parser = subparsers.add_parser(

@@ -96,14 +96,13 @@ class Settings(BaseSettings):
     llm_max_response_characters: int = 12000
     llm_max_concurrency: int = 1
 
-    # CPD MCP (Gebäudemodelle, Pläne, Projektinformationen)
+    # CPD MCP (CPD-AutoPlan Agent auf 127.0.0.1:7373/mcp)
     cpd_mcp_enabled: bool = False
-    cpd_mcp_url: str = ""
-    cpd_mcp_tool: str = ""
-    cpd_mcp_query_argument: str = "query"
+    cpd_mcp_url: str = "http://127.0.0.1:7373/mcp"
+    cpd_mcp_token: str = ""
     cpd_mcp_mode: str = "auto"  # auto | always | off
-    cpd_mcp_timeout_seconds: int = 60
-    cpd_mcp_max_context_chars: int = 20000
+    cpd_mcp_timeout_seconds: int = 120
+    cpd_mcp_max_tool_rounds: int = 12
 
     http_max_retries: int = 4
     http_retry_base_seconds: float = 2.0

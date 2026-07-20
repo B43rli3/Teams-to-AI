@@ -698,11 +698,49 @@ Antworten sind verbindlich auf Deutsch. Dafür gelten:
 
 ---
 
+## CPD MCP-Integration
+
+Anfragen in Teams können optional über **CPD (Model Context Protocol)** mit Gebäudemodelle, Plänen und Projektinformationen beantwortet werden.
+
+### Konfiguration (`.env`)
+
+```env
+CPD_MCP_ENABLED=true
+CPD_MCP_URL=http://127.0.0.1:8081/mcp
+CPD_MCP_TOOL=cpd_query
+CPD_MCP_QUERY_ARGUMENT=query
+CPD_MCP_MODE=auto
+```
+
+| Variable | Bedeutung |
+|---|---|
+| `CPD_MCP_ENABLED` | CPD-Anbindung ein/aus |
+| `CPD_MCP_URL` | MCP-Endpunkt (Streamable HTTP, z. B. `/mcp`) |
+| `CPD_MCP_TOOL` | Tool-Name (leer = automatische Auswahl) |
+| `CPD_MCP_QUERY_ARGUMENT` | Argumentname für die Nutzerfrage |
+| `CPD_MCP_MODE` | `auto` = nur bei Plan/Modell/CPD-Keywords, `always` = immer |
+
+### Test
+
+```powershell
+python -m app.cli test-cpd-mcp
+python -m app.cli test-cpd-mcp --question "Welche Modelle gibt es im Projekt?"
+```
+
+### Ablauf
+
+1. Teams-Nachricht wird empfangen
+2. Bei Bedarf ruft die App ein CPD-MCP-Tool auf
+3. CPD-Antwort wird als **CPD-Wissensbasis** an Ollama übergeben
+4. Ollama antwortet auf Deutsch in Teams
+
+---
+
 ## Zukünftige Erweiterungen
 
 - **Thread-Replies verarbeiten** (`PROCESS_THREAD_REPLIES=true`)
 - **RAG** (Retrieval-Augmented Generation) mit lokaler Wissensbasis
-- **MCP** (Model Context Protocol) für erweiterte Tool-Integration
+- **Mehrstufige MCP-Tool-Loops** (mehrere CPD-Abfragen pro Anfrage)
 - **Erweiterte Anhänge** (OCR, Tabellen, weitere Formate)
 - **Microsoft Teams Bot Framework** für echten Bot-Namen und Avatar
 - **Mehrere Kanäle** gleichzeitig überwachen

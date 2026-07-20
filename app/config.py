@@ -140,6 +140,7 @@ class Settings(BaseSettings):
 
     @property
     def discovery_scopes(self) -> list[str]:
+        """Zusatz-Scopes nur für CLI-Discovery – nie mehr als in GRAPH_SCOPES/API erlaubt."""
         base = set(self.graph_scope_list)
         targets = self.resolved_targets
         has_chat = any(t.kind == TeamsTargetMode.CHAT for t in targets) or (
@@ -148,16 +149,19 @@ class Settings(BaseSettings):
         has_channel = any(t.kind == TeamsTargetMode.CHANNEL for t in targets) or (
             self.teams_target_mode == TeamsTargetMode.CHANNEL
         )
-        if has_chat:
-            base.update(["Chat.Read", "Chat.ReadBasic", "Chat.ReadWrite"])
-        if has_channel:
-            base.update(["Team.ReadBasic.All", "Channel.ReadBasic.All"])
-        return sorted(base)
 
-    @property
-    def runtime_scopes(self) -> list[str]:
-        """Scopes für den laufenden Betrieb inkl. Chat/Kanal-Zusatzrechten."""
-        return self.discovery_scopes
+        def _has_scope(suffix: str) -> bool:
+            needle = suffix.lower()
+            return any(s.lower().endswith(needle) for s in base)
+
+        # Chat.ReadWrite deckt Chat.Read/Chat.ReadBasic ab – nicht separat anfordern.
+        if has_chat and not _has_scope("chat.readwrite") and not _has_scope("chat.read"):
+            base.add("Chat.ReadWrite")
+        if has_channel and not _has_scope("channel.readbasic.all") and not _has_scope(
+            "channelmessage.read.all"
+        ):
+            base.add("Channel.ReadBasic.All")
+        return sorted(base)
 
     @property
     def is_chat_mode(self) -> bool:

@@ -97,3 +97,14 @@ async def test_repository_isolates_same_message_id_across_targets(
         assert await repo.get_message_status("msg-1", target_key="chat:a") == "seen"
     finally:
         await repo.close()
+
+
+def test_discovery_scopes_do_not_request_ungranted_chat_read() -> None:
+    settings = Settings(
+        graph_scopes="User.Read,Chat.ReadWrite,ChannelMessage.Send,Files.ReadWrite.All",
+        teams_chat_ids="19:chat@thread.v2",
+    )
+    scopes = settings.discovery_scopes
+    assert any(s.endswith("Chat.ReadWrite") for s in scopes)
+    assert not any(s.endswith("Chat.Read") and not s.endswith("Chat.ReadWrite") for s in scopes)
+    assert not any(s.endswith("Team.ReadBasic.All") for s in scopes)

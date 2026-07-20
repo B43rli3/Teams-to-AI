@@ -15,9 +15,11 @@ from app.attachments import AttachmentProcessor
 from app.auth import AuthService
 from app.config import Settings, get_settings
 from app.config_manager import EditableSettings, build_settings_from_form, update_env_file
+from app.cpd_context import CpdContextProvider
 from app.graph_client import GraphClient
 from app.llm_client import OllamaClient
 from app.logging_config import configure_logging, get_logger
+from app.mcp_client import McpHttpClient
 from app.message_parser import MessageParser
 from app.repository import Repository
 from app.schemas import (
@@ -44,6 +46,7 @@ class AppState:
         self.repository: Repository | None = None
         self.teams_service: TeamsService | None = None
         self.worker: PollingWorker | None = None
+        self.mcp_client: McpHttpClient | None = None
         self.authenticated_user: dict[str, Any] | None = None
         self._current_token: str = ""
 
@@ -131,6 +134,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings=settings,
     )
 
+    cpd_context_provider: CpdContextProvider | None = None
+    if settings.cpd_mcp_enabled and settings.cpd_mcp_url.strip():
+        mcp_client = McpHttpClient(
+            base_url=settings.cpd_mcp_url.strip(),
+            timeout_seconds=float(settings.cpd_mcp_timeout_seconds),
+        )
+        await mcp_client.start()
+        app_state.mcp_client = mcp_client
+        cpd_context_provider = CpdContextProvider(settings, mcp_client)
+        logger.info("cpd_mcp_enabled", url=settings.cpd_mcp_url.strip())
+
     app_state.worker = PollingWorker(
         settings=settings,
         teams_service=app_state.teams_service,
@@ -138,6 +152,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         repository=app_state.repository,
         message_parser=message_parser,
         attachment_processor=attachment_processor,
+        cpd_context_provider=cpd_context_provider,
     )
     await app_state.worker.start()
 
@@ -151,6 +166,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await app_state.worker.stop()
     if app_state.ollama_client:
         await app_state.ollama_client.close()
+    if app_state.mcp_client:
+        await app_state.mcp_client.close()
     if app_state.graph_client:
         await app_state.graph_client.close()
     if app_state.auth_service:

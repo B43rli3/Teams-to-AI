@@ -16,9 +16,11 @@ from app.file_sharing import (
     count_cross_tenant_recipients,
     parse_chat_member_recipients,
 )
+from app.graph_client import GraphClient
 from app.llm_client import OllamaClient
 from app.logging_config import configure_logging, get_logger
 from app.message_parser import MessageParser
+from app.mcp_client import McpHttpClient
 from app.repository import Repository
 
 logger = get_logger(__name__)
@@ -468,6 +470,50 @@ async def cmd_test_pdf_share(args: argparse.Namespace) -> int:
         auth.save_cache()
 
 
+async def cmd_test_cpd_mcp(args: argparse.Namespace) -> int:
+    """Testet die Verbindung zum CPD MCP-Server."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    if not settings.cpd_mcp_url.strip():
+        print("Fehler: CPD_MCP_URL ist nicht gesetzt.")
+        return 1
+
+    client = McpHttpClient(
+        base_url=settings.cpd_mcp_url.strip(),
+        timeout_seconds=float(settings.cpd_mcp_timeout_seconds),
+    )
+    await client.start()
+    try:
+        tools = await client.list_tools()
+        print(f"CPD MCP erreichbar: {settings.cpd_mcp_url.strip()}")
+        print(f"Tools ({len(tools)}):")
+        for tool in tools:
+            name = str(tool.get("name") or "?")
+            description = str(tool.get("description") or "").strip()
+            line = f"  - {name}"
+            if description:
+                line += f": {description[:120]}"
+            print(line)
+
+        question = (args.question or "").strip()
+        if question:
+            tool_name, answer = await client.query_with_tool(
+                question,
+                tool_name=settings.cpd_mcp_tool,
+                query_argument=settings.cpd_mcp_query_argument,
+            )
+            print(f"\nTest-Tool: {tool_name}")
+            print("Antwort (Auszug):")
+            print(answer[:2000])
+        return 0
+    except Exception as exc:
+        print(f"CPD MCP Fehler: {exc}")
+        return 1
+    finally:
+        await client.close()
+
+
 async def cmd_reset_watermark(_args: argparse.Namespace) -> int:
     """Setzt den Polling-Startpunkt zurück."""
     settings = get_settings()
@@ -529,6 +575,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Chat-ID – testet Freigabe an alle Chat-Mitglieder",
     )
 
+    cpd_parser = subparsers.add_parser(
+        "test-cpd-mcp",
+        help="CPD MCP-Server testen (Tools auflisten, optional Anfrage senden)",
+    )
+    cpd_parser.add_argument(
+        "--question",
+        help="Optionale Testfrage an das CPD (z. B. 'Welche Modelle gibt es?')",
+    )
+
     reply_parser = subparsers.add_parser(
         "send-test-reply", help="Testantwort unter eine Nachricht senden"
     )
@@ -557,6 +612,7 @@ def main() -> None:
         "test-graph": cmd_test_graph,
         "test-ollama": cmd_test_ollama,
         "test-pdf-share": cmd_test_pdf_share,
+        "test-cpd-mcp": cmd_test_cpd_mcp,
         "send-test-reply": cmd_send_test_reply,
         "reset-watermark": cmd_reset_watermark,
     }

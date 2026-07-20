@@ -20,15 +20,25 @@ GERMAN_RETRY_PROMPT = (
     "Formuliere die komplette Antwort jetzt ausschließlich auf Deutsch."
 )
 
+CPD_CONTEXT_RULE = (
+    "CPD-WISSENSBASIS: Im Benutzertext kann ein Block 'CPD-Wissensbasis' enthalten sein. "
+    "Nutze diese Daten als primäre Quelle für Fragen zu Modellen, Plänen, Projekten "
+    "und Bauteilen. Erfinde keine Plan- oder Modellinformationen, die nicht in den "
+    "CPD-Daten stehen. Verweise bei Bedarf auf fehlende Angaben."
+)
+
 
 def build_system_prompt(
     base_prompt: str,
     *,
     include_image_hint: bool = False,
     include_pdf_hint: bool = False,
+    include_cpd_hint: bool = False,
 ) -> str:
     """Baut den finalen System-Prompt mit verbindlichen Sprachregeln."""
     parts = [base_prompt.strip(), GERMAN_LANGUAGE_RULE]
+    if include_cpd_hint:
+        parts.append(CPD_CONTEXT_RULE)
     if include_image_hint:
         parts.append(
             "Der Benutzer kann Bilder anhängen. Beschreibe und nutze sichtbare "

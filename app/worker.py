@@ -12,6 +12,7 @@ from app.exceptions import (
     GraphAPIError,
     GraphPermissionError,
     OllamaContextTooLargeError,
+    OllamaImageLoadError,
     OllamaError,
 )
 from app.language_guard import looks_predominantly_english
@@ -344,6 +345,8 @@ class PollingWorker:
                         target=effective_target,
                     )
                     images = attachment_bundle.images_base64
+                images_for_pdf = list(images)
+                images_for_llm = list(images)
 
                 user_content = clean_text.strip()
                 if attachment_bundle is not None:
@@ -391,7 +394,7 @@ class PollingWorker:
 
                 system_prompt = build_system_prompt(
                     self._settings.llm_system_prompt,
-                    include_image_hint=bool(images),
+                    include_image_hint=bool(images_for_llm),
                     include_pdf_hint=wants_pdf,
                 )
 
@@ -399,15 +402,37 @@ class PollingWorker:
                     llm_response = await self._ollama.chat(
                         llm_messages,
                         system_prompt=system_prompt,
-                        images=images or None,
+                        images=images_for_llm or None,
+                    )
+                except OllamaImageLoadError:
+                    logger.warning(
+                        "ollama_image_load_failed_retry_text_only",
+                        message_id=truncate_id(message_id),
+                    )
+                    images_for_llm = []
+                    system_prompt = build_system_prompt(
+                        self._settings.llm_system_prompt,
+                        include_image_hint=False,
+                        include_pdf_hint=wants_pdf,
+                    )
+                    llm_response = await self._ollama.chat(
+                        llm_messages,
+                        system_prompt=system_prompt,
+                        images=None,
                     )
                 except OllamaContextTooLargeError:
                     logger.warning(
                         "ollama_context_too_large_retry",
                         message_id=truncate_id(message_id),
-                        had_images=bool(images),
+                        had_images=bool(images_for_llm),
                     )
                     # Retry ohne Bilder und mit gekürztem Kontext
+                    images_for_llm = []
+                    system_prompt = build_system_prompt(
+                        self._settings.llm_system_prompt,
+                        include_image_hint=False,
+                        include_pdf_hint=wants_pdf,
+                    )
                     truncated_user = truncate_text(user_content, 6000)
                     compact_messages = [
                         {
@@ -423,7 +448,6 @@ class PollingWorker:
                         system_prompt=system_prompt,
                         images=None,
                     )
-                    images = []
 
                 if self._settings.llm_force_german_retry and looks_predominantly_english(
                     llm_response
@@ -435,7 +459,7 @@ class PollingWorker:
                         llm_response = await self._ollama.chat(
                             llm_messages,
                             system_prompt=system_prompt,
-                            images=images or None,
+                            images=images_for_llm or None,
                         )
                     except OllamaContextTooLargeError:
                         llm_response = await self._ollama.chat(
@@ -460,6 +484,7 @@ class PollingWorker:
                         pdf_bytes = generate_pdf_from_text(
                             title="KI-Antwort",
                             body=llm_response,
+                            images_base64=images_for_pdf,
                         )
                         pdf_name = default_pdf_filename(message_id=message_id)
                         attachment = await self._teams.upload_pdf_reply(

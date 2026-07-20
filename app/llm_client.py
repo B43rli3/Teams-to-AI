@@ -8,7 +8,11 @@ from typing import Any
 
 import httpx
 
-from app.exceptions import OllamaContextTooLargeError, OllamaError
+from app.exceptions import (
+    OllamaContextTooLargeError,
+    OllamaError,
+    OllamaImageLoadError,
+)
 from app.logging_config import get_logger, truncate_text
 
 logger = get_logger(__name__)
@@ -203,6 +207,15 @@ class OllamaClient:
             ):
                 raise OllamaContextTooLargeError(
                     f"Ollama-Kontext zu groß (HTTP {response.status_code}): {body[:200]}",
+                    status_code=response.status_code,
+                )
+            if response.status_code == 400 and (
+                "failed to load image" in lower
+                or "failed to load image or audio file" in lower
+                or "failed to load audio" in lower
+            ):
+                raise OllamaImageLoadError(
+                    f"Ollama konnte das Bild nicht laden (HTTP {response.status_code}): {body[:200]}",
                     status_code=response.status_code,
                 )
             raise OllamaError(

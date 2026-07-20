@@ -48,6 +48,10 @@ class OllamaContextTooLargeError(OllamaError):
     """Ollama lehnt die Anfrage wegen zu großem Kontext ab."""
 
 
+class OllamaImageLoadError(OllamaError):
+    """Ollama konnte das Bild nicht laden (invalid_request_error)."""
+
+
 class MessageProcessingError(TeamsLocalLLMError):
     """Fehler bei der Nachrichtenverarbeitung."""
 

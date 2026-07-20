@@ -25,8 +25,13 @@ def default_pdf_filename(*, message_id: str | None = None) -> str:
     return f"ai-antwort-{stamp}{suffix}.pdf"
 
 
-def generate_pdf_from_text(*, title: str, body: str) -> bytes:
-    """Erzeugt ein PDF aus Klartext (UTF-8, inkl. deutscher Umlaute)."""
+def generate_pdf_from_text(
+    *, title: str, body: str, images_base64: list[str] | None = None
+) -> bytes:
+    """Erzeugt ein PDF aus Klartext (UTF-8, inkl. deutscher Umlaute).
+
+    Optional können Bilder (base64, ohne data:-Prefix) eingebettet werden.
+    """
     from fpdf import FPDF
 
     pdf = FPDF()
@@ -52,12 +57,68 @@ def generate_pdf_from_text(*, title: str, body: str) -> bytes:
         pdf.multi_cell(0, 6, paragraph)
         pdf.ln(2)
 
+    if images_base64:
+        _try_add_first_image(pdf, images_base64)
+
     output = pdf.output()
     if isinstance(output, bytearray):
         return bytes(output)
     if isinstance(output, bytes):
         return output
     return str(output).encode("latin-1")
+
+
+def _try_add_first_image(pdf: "Any", images_base64: list[str]) -> None:
+    """Versucht das erste Bild (base64) als Embedded image hinzuzufügen."""
+    import base64
+    import os
+    import tempfile
+
+    if not images_base64:
+        return
+
+    raw = ""
+    try:
+        raw = images_base64[0]
+        img_bytes = base64.b64decode(raw, validate=True)
+    except Exception:
+        return
+
+    suffix = _detect_image_suffix(img_bytes)
+    if not suffix:
+        return
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=f".{suffix}", delete=False
+        ) as tmp_file:
+            tmp_path = tmp_file.name
+            tmp_file.write(img_bytes)
+
+        # Neue Seite, damit das Bild nicht mitten in Textauflistungen landet.
+        pdf.add_page()
+        # fpdf2 nutzt mm als Standard-Einheit. Breite = 190mm auf A4 passt gut.
+        pdf.image(tmp_path, x=15, w=180)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def _detect_image_suffix(img_bytes: bytes) -> str | None:
+    """Erkennt gängige Bildformate über Magic Bytes."""
+    if img_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if img_bytes.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if img_bytes.startswith(b"GIF87a") or img_bytes.startswith(b"GIF89a"):
+        return "gif"
+    if img_bytes.startswith(b"BM"):
+        return "bmp"
+    # WEBP: "RIFF....WEBP"
+    if img_bytes.startswith(b"RIFF") and b"WEBP" in img_bytes[8:16]:
+        return "webp"
+    return None
 
 
 def _resolve_font_path() -> Path | None:

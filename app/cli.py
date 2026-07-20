@@ -409,7 +409,16 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
-    exit_code = asyncio.run(handler(args))
+    try:
+        exit_code = asyncio.run(handler(args))
+    except KeyboardInterrupt:
+        # Bei Ctrl+C/Schließen wird sonst häufig eine Stacktrace angezeigt.
+        # Der Token-Cache wird ggf. bereits vorher gespeichert.
+        print("Abgebrochen.")
+        sys.exit(130)
+    except asyncio.CancelledError:
+        print("Abgebrochen.")
+        sys.exit(130)
     sys.exit(exit_code)
 
 

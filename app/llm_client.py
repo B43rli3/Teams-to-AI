@@ -81,6 +81,60 @@ class OllamaClient:
         models = data.get("models", [])
         return [str(m.get("name", "")) for m in models if m.get("name")]
 
+    async def chat_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        images: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Sendet eine Chat-Anfrage mit Tools und liefert die Assistant-Nachricht."""
+        chat_messages: list[dict[str, Any]] = []
+
+        if system_prompt:
+            chat_messages.append({"role": "system", "content": system_prompt})
+
+        chat_messages.extend([dict(message) for message in messages])
+
+        if images:
+            for msg in reversed(chat_messages):
+                if msg.get("role") == "user":
+                    msg["images"] = images
+                    break
+            else:
+                chat_messages.append(
+                    {
+                        "role": "user",
+                        "content": "Bitte analysiere die angehängten Bilder.",
+                        "images": images,
+                    }
+                )
+        else:
+            for msg in chat_messages:
+                msg.pop("images", None)
+
+        model = self._model
+        if images and self._vision_model:
+            model = self._vision_model
+            logger.info("ollama_using_vision_model", model=model)
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": chat_messages,
+            "stream": False,
+        }
+        if tools:
+            payload["tools"] = tools
+        if self._keep_alive:
+            payload["keep_alive"] = self._keep_alive
+
+        response_data = await self._request_with_retry(payload)
+        message = response_data.get("message", {})
+        if not isinstance(message, dict):
+            raise OllamaError("Ollama lieferte keine gültige Assistant-Nachricht.")
+        return dict(message)
+
     async def chat(
         self,
         messages: list[dict[str, Any]],

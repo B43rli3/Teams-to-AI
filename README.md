@@ -698,41 +698,47 @@ Antworten sind verbindlich auf Deutsch. Dafür gelten:
 
 ---
 
-## CPD MCP-Integration
+## CPD MCP-Integration (CPD-AutoPlan)
 
-Anfragen in Teams können optional über **CPD (Model Context Protocol)** mit Gebäudemodelle, Plänen und Projektinformationen beantwortet werden.
+Anfragen in Teams können optional **CPD-AutoPlan** über MCP steuern — alle **51 Drawing-Tools** (Pläne, Annotationen, Elemente, Filter, Exporte usw.).
+
+**Voraussetzungen:** Bot und CPD-AutoPlan laufen auf **demselben Rechner** (`127.0.0.1:7373/mcp`). In CPD auf **„Allow agent“** klicken.
 
 ### Konfiguration (`.env`)
 
 ```env
 CPD_MCP_ENABLED=true
-CPD_MCP_URL=http://127.0.0.1:8081/mcp
-CPD_MCP_TOOL=cpd_query
-CPD_MCP_QUERY_ARGUMENT=query
+CPD_MCP_URL=http://127.0.0.1:7373/mcp
+CPD_MCP_TOKEN=<Token aus dem CPD-Agent-Panel>
 CPD_MCP_MODE=auto
+CPD_MCP_TIMEOUT_SECONDS=120
+CPD_MCP_MAX_TOOL_ROUNDS=12
 ```
 
 | Variable | Bedeutung |
 |---|---|
 | `CPD_MCP_ENABLED` | CPD-Anbindung ein/aus |
-| `CPD_MCP_URL` | MCP-Endpunkt (Streamable HTTP, z. B. `/mcp`) |
-| `CPD_MCP_TOOL` | Tool-Name (leer = automatische Auswahl) |
-| `CPD_MCP_QUERY_ARGUMENT` | Argumentname für die Nutzerfrage |
-| `CPD_MCP_MODE` | `auto` = nur bei Plan/Modell/CPD-Keywords, `always` = immer |
+| `CPD_MCP_URL` | MCP-Endpunkt (Standard: `http://127.0.0.1:7373/mcp`) |
+| `CPD_MCP_TOKEN` | Bearer-Token aus dem CPD-Agent-Panel (oder `BIM_AGENT_TOKEN`) |
+| `CPD_MCP_MODE` | `auto` = bei Plan/Modell/CPD-Keywords, `always` = immer, `off` = aus |
+| `CPD_MCP_TIMEOUT_SECONDS` | HTTP-Timeout pro MCP-Aufruf |
+| `CPD_MCP_MAX_TOOL_ROUNDS` | Max. Ollama↔MCP-Tool-Schleifen pro Teams-Nachricht |
 
 ### Test
 
 ```powershell
 python -m app.cli test-cpd-mcp
-python -m app.cli test-cpd-mcp --question "Welche Modelle gibt es im Projekt?"
+python -m app.cli test-cpd-mcp --call-get-state
 ```
 
 ### Ablauf
 
 1. Teams-Nachricht wird empfangen
-2. Bei Bedarf ruft die App ein CPD-MCP-Tool auf
-3. CPD-Antwort wird als **CPD-Wissensbasis** an Ollama übergeben
-4. Ollama antwortet auf Deutsch in Teams
+2. Bei Bedarf startet der **CPD-Agent** (Ollama + MCP-Tool-Loop)
+3. Ollama wählt passende CPD-Tools (`get_state`, `query_elements`, `start_run`, …)
+4. Antwort auf Deutsch in Teams
+
+Ohne Consent oder ohne geöffnetes Projekt/Drawing meldet CPD `{ ok: false, reason: "…" }` — der Bot erklärt das auf Deutsch.
 
 ---
 
@@ -740,7 +746,6 @@ python -m app.cli test-cpd-mcp --question "Welche Modelle gibt es im Projekt?"
 
 - **Thread-Replies verarbeiten** (`PROCESS_THREAD_REPLIES=true`)
 - **RAG** (Retrieval-Augmented Generation) mit lokaler Wissensbasis
-- **Mehrstufige MCP-Tool-Loops** (mehrere CPD-Abfragen pro Anfrage)
 - **Erweiterte Anhänge** (OCR, Tabellen, weitere Formate)
 - **Microsoft Teams Bot Framework** für echten Bot-Namen und Avatar
 - **Mehrere Kanäle** gleichzeitig überwachen

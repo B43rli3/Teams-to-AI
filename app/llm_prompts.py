@@ -21,10 +21,9 @@ GERMAN_RETRY_PROMPT = (
 )
 
 CPD_CONTEXT_RULE = (
-    "CPD-WISSENSBASIS: Im Benutzertext kann ein Block 'CPD-Wissensbasis' enthalten sein. "
-    "Nutze diese Daten als primäre Quelle für Fragen zu Modellen, Plänen, Projekten "
-    "und Bauteilen. Erfinde keine Plan- oder Modellinformationen, die nicht in den "
-    "CPD-Daten stehen. Verweise bei Bedarf auf fehlende Angaben."
+    "CPD-AUTOPLAN: Du kannst CPD-AutoPlan über MCP-Tools steuern (Pläne, "
+    "Annotationen, Elemente, Filter, Export). Nutze die bereitgestellten Tools "
+    "für Modell- und Planfragen. Erfinde keine Plan- oder Modellinformationen."
 )
 
 

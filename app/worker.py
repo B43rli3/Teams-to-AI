@@ -8,10 +8,11 @@ from datetime import UTC, datetime
 
 from app.attachments import AttachmentProcessor
 from app.config import Settings
-from app.cpd_context import CpdContextProvider
+from app.cpd_agent import CpdAgent, user_facing_mcp_error
 from app.exceptions import (
     GraphAPIError,
     GraphPermissionError,
+    McpError,
     OllamaContextTooLargeError,
     OllamaError,
     OllamaImageLoadError,
@@ -42,7 +43,7 @@ class PollingWorker:
         repository: Repository,
         message_parser: MessageParser,
         attachment_processor: AttachmentProcessor | None = None,
-        cpd_context_provider: CpdContextProvider | None = None,
+        cpd_agent: CpdAgent | None = None,
     ) -> None:
         self._settings = settings
         self._teams = teams_service
@@ -50,7 +51,7 @@ class PollingWorker:
         self._repo = repository
         self._parser = message_parser
         self._attachments = attachment_processor
-        self._cpd = cpd_context_provider
+        self._cpd = cpd_agent
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._poll_lock = asyncio.Lock()
@@ -363,11 +364,11 @@ class PollingWorker:
                                 f"{context_block}"
                             )
 
-                cpd_context_block = ""
-                if self._cpd is not None:
-                    cpd_context_block = await self._cpd.fetch_context_block(user_content)
-                    if cpd_context_block:
-                        user_content = f"{user_content}\n\n{cpd_context_block}"
+                use_cpd_agent = (
+                    self._cpd is not None
+                    and self._cpd.enabled
+                    and self._cpd.should_handle(user_content)
+                )
 
                 if not user_content.strip() and not images:
                     await self._repo.update_message_failed(
@@ -405,15 +406,24 @@ class PollingWorker:
                     self._settings.llm_system_prompt,
                     include_image_hint=bool(images_for_llm),
                     include_pdf_hint=wants_pdf,
-                    include_cpd_hint=bool(cpd_context_block),
+                    include_cpd_hint=use_cpd_agent,
                 )
 
                 try:
-                    llm_response = await self._ollama.chat(
-                        llm_messages,
-                        system_prompt=system_prompt,
-                        images=images_for_llm or None,
-                    )
+                    if use_cpd_agent and self._cpd is not None:
+                        llm_response = await self._cpd.answer(
+                            llm_messages,
+                            system_prompt=system_prompt,
+                            images=images_for_llm or None,
+                        )
+                    else:
+                        llm_response = await self._ollama.chat(
+                            llm_messages,
+                            system_prompt=system_prompt,
+                            images=images_for_llm or None,
+                        )
+                except McpError as exc:
+                    llm_response = user_facing_mcp_error(exc)
                 except OllamaImageLoadError:
                     logger.warning(
                         "ollama_image_load_failed_retry_text_only",
@@ -424,7 +434,7 @@ class PollingWorker:
                         self._settings.llm_system_prompt,
                         include_image_hint=False,
                         include_pdf_hint=wants_pdf,
-                        include_cpd_hint=bool(cpd_context_block),
+                        include_cpd_hint=use_cpd_agent,
                     )
                     llm_response = await self._ollama.chat(
                         llm_messages,
@@ -443,7 +453,7 @@ class PollingWorker:
                         self._settings.llm_system_prompt,
                         include_image_hint=False,
                         include_pdf_hint=wants_pdf,
-                        include_cpd_hint=bool(cpd_context_block),
+                        include_cpd_hint=use_cpd_agent,
                     )
                     truncated_user = truncate_text(user_content, 6000)
                     compact_messages = [

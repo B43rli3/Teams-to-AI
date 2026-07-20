@@ -15,7 +15,7 @@ from app.attachments import AttachmentProcessor
 from app.auth import AuthService
 from app.config import Settings, get_settings
 from app.config_manager import EditableSettings, build_settings_from_form, update_env_file
-from app.cpd_context import CpdContextProvider
+from app.cpd_agent import CpdAgent
 from app.graph_client import GraphClient
 from app.llm_client import OllamaClient
 from app.logging_config import configure_logging, get_logger
@@ -134,16 +134,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings=settings,
     )
 
-    cpd_context_provider: CpdContextProvider | None = None
+    cpd_agent: CpdAgent | None = None
     if settings.cpd_mcp_enabled and settings.cpd_mcp_url.strip():
-        mcp_client = McpHttpClient(
-            base_url=settings.cpd_mcp_url.strip(),
-            timeout_seconds=float(settings.cpd_mcp_timeout_seconds),
-        )
-        await mcp_client.start()
-        app_state.mcp_client = mcp_client
-        cpd_context_provider = CpdContextProvider(settings, mcp_client)
-        logger.info("cpd_mcp_enabled", url=settings.cpd_mcp_url.strip())
+        if not settings.cpd_mcp_token.strip():
+            logger.warning(
+                "cpd_mcp_missing_token",
+                hint="Setzen Sie CPD_MCP_TOKEN aus dem CPD-Agent-Panel.",
+            )
+        else:
+            mcp_client = McpHttpClient(
+                base_url=settings.cpd_mcp_url.strip(),
+                token=settings.cpd_mcp_token.strip(),
+                timeout_seconds=float(settings.cpd_mcp_timeout_seconds),
+            )
+            await mcp_client.start()
+            app_state.mcp_client = mcp_client
+            cpd_agent = CpdAgent(settings, mcp_client, app_state.ollama_client)
+            logger.info(
+                "cpd_mcp_enabled",
+                url=settings.cpd_mcp_url.strip(),
+                max_tool_rounds=settings.cpd_mcp_max_tool_rounds,
+            )
 
     app_state.worker = PollingWorker(
         settings=settings,
@@ -152,7 +163,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         repository=app_state.repository,
         message_parser=message_parser,
         attachment_processor=attachment_processor,
-        cpd_context_provider=cpd_context_provider,
+        cpd_agent=cpd_agent,
     )
     await app_state.worker.start()
 

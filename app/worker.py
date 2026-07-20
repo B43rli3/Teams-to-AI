@@ -491,6 +491,7 @@ class PollingWorker:
                             filename=pdf_name,
                             pdf_bytes=pdf_bytes,
                             target=effective_target,
+                            sender_id=target_msg.sender_id,
                         )
                         attachment = upload.attachment
                         attachments = [attachment]

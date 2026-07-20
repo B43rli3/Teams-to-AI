@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.exceptions import GraphAPIError, GraphPermissionError
+from app.file_sharing import chat_id_variants
 from app.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -126,8 +127,16 @@ class GraphClient:
 
     async def get_chat_members(self, chat_id: str) -> list[dict[str, Any]]:
         """Listet Mitglieder eines Chats auf."""
-        data = await self._request("GET", f"/chats/{chat_id}/members")
-        return list(data.get("value", []))
+        last_error: Exception | None = None
+        for candidate_chat_id in chat_id_variants(chat_id):
+            try:
+                data = await self._request("GET", f"/chats/{candidate_chat_id}/members")
+                return list(data.get("value", []))
+            except GraphAPIError as exc:
+                last_error = exc
+        raise GraphAPIError(
+            "Chat-Mitglieder konnten nicht geladen werden.",
+        ) from last_error
 
     async def get_channel_messages(
         self,
@@ -244,7 +253,18 @@ class GraphClient:
         if mode_value == "chat":
             if not chat_id:
                 raise GraphAPIError("TEAMS_CHAT_ID fehlt für Datei-Upload.")
-            folder = await self.get_chat_files_folder(chat_id)
+            last_error: Exception | None = None
+            for candidate_chat_id in chat_id_variants(chat_id):
+                try:
+                    folder = await self.get_chat_files_folder(candidate_chat_id)
+                    chat_id = candidate_chat_id
+                    break
+                except GraphAPIError as exc:
+                    last_error = exc
+            else:
+                raise GraphAPIError(
+                    "Dateiordner des Chats konnte nicht aufgelöst werden.",
+                ) from last_error
         else:
             if not team_id or not channel_id:
                 raise GraphAPIError("Team- und Channel-ID fehlen für Datei-Upload.")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.file_sharing import (
     build_invite_recipient_payloads,
+    chat_id_variants,
     count_cross_tenant_recipients,
     parse_chat_member_recipients,
 )
@@ -30,6 +31,16 @@ def test_parse_chat_member_recipients_extracts_email_and_tenant() -> None:
     assert len(recipients) == 1
     assert recipients[0].email == "user@stranext.de"
     assert recipients[0].tenant_id == "tenant-b"
+
+
+def test_chat_id_variants() -> None:
+    variants = chat_id_variants("19:abc")
+    assert "19:abc" in variants
+    assert "19:abc@thread.v2" in variants
+
+    variants_full = chat_id_variants("19:abc@thread.v2")
+    assert "19:abc" in variants_full
+    assert "19:abc@thread.v2" in variants_full
 
 
 def test_build_invite_recipient_payloads_prefers_email() -> None:

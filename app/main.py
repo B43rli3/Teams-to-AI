@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app_state.auth_service = AuthService(
         tenant_id=settings.azure_tenant_id,
         client_id=settings.azure_client_id,
-        scopes=settings.graph_scope_list,
+        scopes=settings.runtime_scopes,
         cache_path=settings.token_cache_path_obj,
     )
 

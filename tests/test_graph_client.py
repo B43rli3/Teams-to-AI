@@ -279,6 +279,28 @@ async def test_invite_users_to_drive_item(graph_client: GraphClient) -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_get_chat_members_tries_chat_id_variants(graph_client: GraphClient) -> None:
+    respx.get(f"{GRAPH_BASE_URL}/chats/19:abc/members").mock(
+        return_value=httpx.Response(404, json={"error": {"message": "Not found"}})
+    )
+    route = respx.get(f"{GRAPH_BASE_URL}/chats/19:abc@thread.v2/members").mock(
+        return_value=httpx.Response(
+            200,
+            json={"value": [{"userId": "u1", "email": "user@example.com"}]},
+        )
+    )
+
+    await graph_client.start()
+    try:
+        members = await graph_client.get_chat_members("19:abc")
+        assert members[0]["userId"] == "u1"
+        assert route.called
+    finally:
+        await graph_client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_get_chat_members(graph_client: GraphClient) -> None:
     respx.get(f"{GRAPH_BASE_URL}/chats/chat-1/members").mock(
         return_value=httpx.Response(

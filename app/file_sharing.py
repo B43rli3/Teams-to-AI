@@ -70,6 +70,19 @@ def count_cross_tenant_recipients(
     )
 
 
+def chat_id_variants(chat_id: str) -> list[str]:
+    """Liefert Chat-ID-Varianten für Graph-Endpunkte (mit/ohne @thread.v2)."""
+    cleaned = chat_id.strip()
+    if not cleaned:
+        return []
+
+    variants: list[str] = []
+    for candidate in (cleaned, f"{cleaned}@thread.v2", cleaned.removesuffix("@thread.v2")):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+
 def build_invite_recipient_payloads(recipients: list[ShareRecipient]) -> list[dict[str, str]]:
     """Baut Graph-Recipient-Objekte (E-Mail bevorzugt für Cross-Tenant)."""
     payloads: list[dict[str, str]] = []

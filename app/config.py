@@ -155,6 +155,11 @@ class Settings(BaseSettings):
         return sorted(base)
 
     @property
+    def runtime_scopes(self) -> list[str]:
+        """Scopes für den laufenden Betrieb inkl. Chat/Kanal-Zusatzrechten."""
+        return self.discovery_scopes
+
+    @property
     def is_chat_mode(self) -> bool:
         targets = self.resolved_targets
         if targets:

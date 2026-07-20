@@ -8,6 +8,7 @@ from typing import Any
 from app.config import Settings, TeamsTargetMode, TriggerMode
 from app.exceptions import GraphAPIError
 from app.file_sharing import (
+    ShareRecipient,
     build_invite_recipient_payloads,
     count_cross_tenant_recipients,
     parse_chat_member_recipients,
@@ -201,6 +202,7 @@ class TeamsService:
         filename: str,
         pdf_bytes: bytes,
         target: TeamsTarget | None = None,
+        sender_id: str = "",
     ) -> PdfUploadResult:
         """Lädt eine PDF hoch, gibt Zugriff frei und liefert ein Attachment."""
         if len(pdf_bytes) > self._settings.attachment_max_bytes:
@@ -249,6 +251,7 @@ class TeamsService:
             cross_tenant_count = await self._grant_chat_members_access(
                 drive_item,
                 resolved.chat_id,
+                sender_id=sender_id,
             )
 
         if needs_sharing:
@@ -283,6 +286,8 @@ class TeamsService:
         self,
         drive_item: dict[str, Any],
         chat_id: str,
+        *,
+        sender_id: str = "",
     ) -> int:
         """Gibt Chat-Mitgliedern direkten Lesezugriff (E-Mail + objectId)."""
         try:
@@ -292,13 +297,20 @@ class TeamsService:
                 "chat_members_fetch_failed",
                 error=str(exc)[:200],
                 chat_id=truncate_id(chat_id, 40),
+                hint="Chat.Read/Chat.ReadWrite in GRAPH_SCOPES? Token-Cache löschen und neu login.",
             )
-            return 0
+            members = []
 
         recipients = parse_chat_member_recipients(
             members,
             exclude_user_id=self._authenticated_user_id,
         )
+        if sender_id and sender_id != self._authenticated_user_id:
+            sender_known = any(recipient.user_id == sender_id for recipient in recipients)
+            if not sender_known:
+                recipients.append(
+                    ShareRecipient(user_id=sender_id, display_name="Anfragender")
+                )
         if not recipients:
             logger.warning(
                 "chat_members_empty_for_share",

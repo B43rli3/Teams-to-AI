@@ -10,7 +10,12 @@ from typing import Any
 from app import __version__
 from app.auth import AuthService
 from app.config import Settings, get_settings
-from app.graph_client import GraphClient
+from app.exceptions import GraphAPIError
+from app.file_sharing import (
+    build_invite_recipient_payloads,
+    count_cross_tenant_recipients,
+    parse_chat_member_recipients,
+)
 from app.llm_client import OllamaClient
 from app.logging_config import configure_logging, get_logger
 from app.message_parser import MessageParser
@@ -331,6 +336,138 @@ async def cmd_send_test_reply(args: argparse.Namespace) -> int:
         auth.save_cache()
 
 
+async def cmd_test_pdf_share(args: argparse.Namespace) -> int:
+    """Prüft, ob PDF-Freigaben (inkl. Cross-Tenant per E-Mail) funktionieren."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    auth = _create_auth_service(settings)
+    client, _ = _create_graph_client(auth, settings)
+
+    email = (args.email or "").strip()
+    chat_id = (args.chat_id or "").strip()
+    if not email and not chat_id:
+        print("Fehler: Mindestens --email oder --chat-id angeben.")
+        return 1
+
+    await client.start()
+    try:
+        me = await client.get_me()
+        bot_user_id = str(me.get("id") or "")
+        bot_name = str(me.get("displayName") or "Unbekannt")
+        bot_mail = str(me.get("mail") or me.get("userPrincipalName") or "")
+
+        bot_tenant_id = ""
+        try:
+            bot_tenant_id = await client.get_organization_tenant_id()
+        except GraphAPIError:
+            bot_tenant_id = ""
+
+        print("=== Bot-Konto ===")
+        print(f"Name:   {bot_name}")
+        print(f"E-Mail: {bot_mail}")
+        print(f"Tenant: {bot_tenant_id or '(nicht ermittelbar – ok für Chat-Test)'}")
+
+        pdf_bytes = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        pdf_bytes += b"2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\n"
+        pdf_bytes += b"trailer<</Root 1 0 R>>\n%%EOF\n"
+        filename = "freigabe-test.pdf"
+
+        print("\n=== Upload ===")
+        drive_item = await client.upload_file_to_teams_chat_files_folder(
+            filename=filename,
+            content=pdf_bytes,
+            content_type="application/pdf",
+        )
+        web_url = str(drive_item.get("webUrl") or "")
+        print(f"OK: {filename}")
+        if web_url:
+            print(f"URL: {web_url}")
+
+        recipients = []
+        if chat_id:
+            print("\n=== Chat-Mitglieder ===")
+            members = await client.get_chat_members(chat_id)
+            recipients = parse_chat_member_recipients(
+                members,
+                exclude_user_id=bot_user_id,
+            )
+            if not bot_tenant_id:
+                for member in members:
+                    member_user_id = str(member.get("userId") or "")
+                    if member_user_id == bot_user_id:
+                        bot_tenant_id = str(member.get("tenantId") or "")
+                        break
+            if not recipients:
+                print("Keine weiteren Chat-Mitglieder gefunden.")
+            for recipient in recipients:
+                scope = "intern"
+                if bot_tenant_id and recipient.tenant_id:
+                    scope = "EXTERN" if recipient.tenant_id != bot_tenant_id else "intern"
+                print(
+                    f"- {recipient.display_name or recipient.user_id}: "
+                    f"{recipient.email or '(keine E-Mail)'} [{scope}]"
+                )
+
+        if email:
+            recipients.append(
+                parse_chat_member_recipients(
+                    [{"userId": "manual", "email": email, "displayName": email}]
+                )[0]
+            )
+
+        invite_payloads = build_invite_recipient_payloads(recipients)
+        cross_tenant = count_cross_tenant_recipients(recipients, bot_tenant_id)
+
+        print("\n=== Freigabe per invite (E-Mail/objectId) ===")
+        if not invite_payloads:
+            print("Keine Empfänger für Freigabe vorhanden.")
+        else:
+            try:
+                granted = await client.invite_recipients_to_drive_item(
+                    drive_item,
+                    recipients=invite_payloads,
+                )
+                print(f"OK: {granted} Empfänger freigegeben.")
+                if cross_tenant:
+                    print(
+                        "Hinweis: Cross-Tenant erkannt – Freigabe erfolgte per E-Mail "
+                        "(falls vorhanden)."
+                    )
+            except GraphAPIError as exc:
+                print(f"FEHLER: {exc}")
+                print(
+                    "→ IT prüfen: Externes Teilen in SharePoint/OneDrive (Stratest) "
+                    "für den Bot-Account erlauben."
+                )
+                return 1
+
+        print("\n=== Organisations-Link (nur intern) ===")
+        if cross_tenant:
+            print("Übersprungen (Cross-Tenant – Org-Link hilft externen Nutzern nicht).")
+        else:
+            try:
+                org_url = await client.create_organization_view_link(drive_item)
+                if org_url:
+                    print(f"OK: {org_url}")
+                else:
+                    print("Kein Link erhalten.")
+            except GraphAPIError as exc:
+                print(f"FEHLER: {exc}")
+
+        print("\n=== Ergebnis ===")
+        print(
+            "Wenn 'invite OK' erscheint, öffne die URL oben im Browser "
+            "(mit deinem Stranext-Konto angemeldet)."
+        )
+        print(
+            "Funktioniert der Download dort, kann der Bot dir PDFs per Teams senden."
+        )
+        return 0
+    finally:
+        await client.close()
+        auth.save_cache()
+
+
 async def cmd_reset_watermark(_args: argparse.Namespace) -> int:
     """Setzt den Polling-Startpunkt zurück."""
     settings = get_settings()
@@ -379,6 +516,19 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("test-graph", help="Graph-Verbindung testen")
     subparsers.add_parser("test-ollama", help="Ollama-Verbindung testen")
 
+    share_parser = subparsers.add_parser(
+        "test-pdf-share",
+        help="PDF-Freigabe testen (Cross-Tenant per E-Mail)",
+    )
+    share_parser.add_argument(
+        "--email",
+        help="E-Mail-Adresse eines externen Empfängers (z. B. dein Stranext-Konto)",
+    )
+    share_parser.add_argument(
+        "--chat-id",
+        help="Chat-ID – testet Freigabe an alle Chat-Mitglieder",
+    )
+
     reply_parser = subparsers.add_parser(
         "send-test-reply", help="Testantwort unter eine Nachricht senden"
     )
@@ -406,6 +556,7 @@ def main() -> None:
         "discover-chats": cmd_discover_chats,
         "test-graph": cmd_test_graph,
         "test-ollama": cmd_test_ollama,
+        "test-pdf-share": cmd_test_pdf_share,
         "send-test-reply": cmd_send_test_reply,
         "reset-watermark": cmd_reset_watermark,
     }

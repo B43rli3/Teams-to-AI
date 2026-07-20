@@ -227,6 +227,30 @@ async def test_upload_file_to_teams_chat_files_folder(graph_client: GraphClient)
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_invite_recipients_to_drive_item_with_email(graph_client: GraphClient) -> None:
+    route = respx.post(f"{GRAPH_BASE_URL}/drives/drive-me/items/item-2/invite").mock(
+        return_value=httpx.Response(200, json={"value": []})
+    )
+
+    await graph_client.start()
+    try:
+        count = await graph_client.invite_recipients_to_drive_item(
+            {
+                "id": "item-2",
+                "parentReference": {"driveId": "drive-me"},
+            },
+            recipients=[{"email": "user@stranext.de"}],
+        )
+        assert count == 1
+        assert route.called
+        body = route.calls.last.request.content.decode("utf-8")
+        assert "user@stranext.de" in body
+    finally:
+        await graph_client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_invite_users_to_drive_item(graph_client: GraphClient) -> None:
     route = respx.post(f"{GRAPH_BASE_URL}/drives/drive-me/items/item-2/invite").mock(
         return_value=httpx.Response(200, json={"value": []})

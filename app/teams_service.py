@@ -7,6 +7,11 @@ from typing import Any
 
 from app.config import Settings, TeamsTargetMode, TriggerMode
 from app.exceptions import GraphAPIError
+from app.file_sharing import (
+    build_invite_recipient_payloads,
+    count_cross_tenant_recipients,
+    parse_chat_member_recipients,
+)
 from app.graph_client import GraphClient
 from app.logging_config import get_logger, truncate_id
 from app.message_parser import MessageParser, check_mention_trigger
@@ -238,22 +243,33 @@ class TeamsService:
         web_url = str(drive_item.get("webUrl") or "")
         needs_sharing = personal_upload or "/personal/" in web_url.lower()
         share_url: str | None = None
+        cross_tenant_count = 0
+
+        if needs_sharing and resolved.kind == TeamsTargetMode.CHAT and resolved.chat_id:
+            cross_tenant_count = await self._grant_chat_members_access(
+                drive_item,
+                resolved.chat_id,
+            )
 
         if needs_sharing:
-            if resolved.kind == TeamsTargetMode.CHAT and resolved.chat_id:
-                await self._grant_chat_members_access(drive_item, resolved.chat_id)
-
-            try:
-                share_url = await self._graph.create_organization_view_link(drive_item)
-                if share_url:
-                    logger.info(
-                        "pdf_org_share_link_created",
+            if cross_tenant_count == 0:
+                try:
+                    share_url = await self._graph.create_organization_view_link(drive_item)
+                    if share_url:
+                        logger.info(
+                            "pdf_org_share_link_created",
+                            target_key=resolved.key,
+                        )
+                except GraphAPIError as exc:
+                    logger.warning(
+                        "drive_item_org_link_failed",
+                        error=str(exc)[:200],
                         target_key=resolved.key,
                     )
-            except GraphAPIError as exc:
-                logger.warning(
-                    "drive_item_org_link_failed",
-                    error=str(exc)[:200],
+            else:
+                logger.info(
+                    "pdf_skip_org_link_for_cross_tenant",
+                    external_recipients=cross_tenant_count,
                     target_key=resolved.key,
                 )
 
@@ -267,8 +283,8 @@ class TeamsService:
         self,
         drive_item: dict[str, Any],
         chat_id: str,
-    ) -> None:
-        """Gibt Chat-Mitgliedern direkten Lesezugriff auf die Datei."""
+    ) -> int:
+        """Gibt Chat-Mitgliedern direkten Lesezugriff (E-Mail + objectId)."""
         try:
             members = await self._graph.get_chat_members(chat_id)
         except GraphAPIError as exc:
@@ -277,42 +293,68 @@ class TeamsService:
                 error=str(exc)[:200],
                 chat_id=truncate_id(chat_id, 40),
             )
-            return
+            return 0
 
-        user_ids: list[str] = []
-        for member in members:
-            user_id = str(
-                member.get("userId")
-                or (member.get("user") or {}).get("id")
-                or ""
-            )
-            if not user_id or user_id == self._authenticated_user_id:
-                continue
-            user_ids.append(user_id)
-
-        if not user_ids:
+        recipients = parse_chat_member_recipients(
+            members,
+            exclude_user_id=self._authenticated_user_id,
+        )
+        if not recipients:
             logger.warning(
                 "chat_members_empty_for_share",
                 chat_id=truncate_id(chat_id, 40),
             )
-            return
+            return 0
+
+        bot_tenant_id = ""
+        for member in members:
+            member_user_id = str(
+                member.get("userId")
+                or (member.get("user") or {}).get("id")
+                or ""
+            )
+            if member_user_id == self._authenticated_user_id:
+                bot_tenant_id = str(member.get("tenantId") or "").strip()
+                break
+        if not bot_tenant_id:
+            try:
+                bot_tenant_id = await self._graph.get_organization_tenant_id()
+            except GraphAPIError as exc:
+                logger.warning(
+                    "bot_tenant_lookup_failed",
+                    error=str(exc)[:200],
+                )
+
+        cross_tenant = count_cross_tenant_recipients(recipients, bot_tenant_id)
+        invite_payloads = build_invite_recipient_payloads(recipients)
+        if not invite_payloads:
+            logger.warning(
+                "chat_members_no_invite_identifiers",
+                chat_id=truncate_id(chat_id, 40),
+            )
+            return cross_tenant
 
         try:
-            granted = await self._graph.invite_users_to_drive_item(
+            granted = await self._graph.invite_recipients_to_drive_item(
                 drive_item,
-                user_object_ids=user_ids,
+                recipients=invite_payloads,
             )
             logger.info(
                 "pdf_chat_members_granted",
                 chat_id=truncate_id(chat_id, 40),
                 recipients=granted,
+                cross_tenant=cross_tenant,
+                via_email=sum(1 for item in invite_payloads if "email" in item),
             )
         except GraphAPIError as exc:
             logger.warning(
                 "pdf_chat_members_invite_failed",
                 error=str(exc)[:200],
                 chat_id=truncate_id(chat_id, 40),
+                cross_tenant=cross_tenant,
             )
+
+        return cross_tenant
 
     def _default_target(self) -> TeamsTarget:
         targets = self.get_targets()

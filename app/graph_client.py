@@ -93,6 +93,14 @@ class GraphClient:
         """Ruft den aktuellen Benutzer ab."""
         return await self._request("GET", "/me")
 
+    async def get_organization_tenant_id(self) -> str:
+        """Gibt die Tenant-ID des angemeldeten Mandanten zurück."""
+        data = await self._request("GET", "/organization")
+        orgs = list(data.get("value", []))
+        if not orgs:
+            return ""
+        return str(orgs[0].get("id") or "")
+
     async def get_joined_teams(self) -> list[dict[str, Any]]:
         """Listet Teams des angemeldeten Benutzers auf."""
         data = await self._request("GET", "/me/joinedTeams")
@@ -329,18 +337,14 @@ class GraphClient:
         web_url = str(link.get("webUrl") or "").strip()
         return web_url or None
 
-    async def invite_users_to_drive_item(
+    async def invite_recipients_to_drive_item(
         self,
         drive_item: dict[str, Any],
         *,
-        user_object_ids: list[str],
+        recipients: list[dict[str, str]],
         roles: list[str] | None = None,
     ) -> int:
-        """Gewährt Chat-/Team-Mitgliedern direkten Lesezugriff auf ein driveItem."""
-        recipients = [
-            {"objectId": uid}
-            for uid in dict.fromkeys(uid.strip() for uid in user_object_ids if uid and uid.strip())
-        ]
+        """Gewährt Empfängern direkten Zugriff (objectId und/oder E-Mail)."""
         if not recipients:
             return 0
 
@@ -362,6 +366,24 @@ class GraphClient:
             },
         )
         return len(recipients)
+
+    async def invite_users_to_drive_item(
+        self,
+        drive_item: dict[str, Any],
+        *,
+        user_object_ids: list[str],
+        roles: list[str] | None = None,
+    ) -> int:
+        """Gewährt Chat-/Team-Mitgliedern direkten Lesezugriff auf ein driveItem."""
+        recipients = [
+            {"objectId": uid}
+            for uid in dict.fromkeys(uid.strip() for uid in user_object_ids if uid and uid.strip())
+        ]
+        return await self.invite_recipients_to_drive_item(
+            drive_item,
+            recipients=recipients,
+            roles=roles,
+        )
 
     async def _finalize_uploaded_drive_item(self, drive_item: dict[str, Any]) -> dict[str, Any]:
         """Lädt fehlende Metadaten (eTag, webUrl) nach dem Upload nach."""
